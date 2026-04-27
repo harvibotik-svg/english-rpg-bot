@@ -32,11 +32,11 @@ OPENROUTER_MODEL = "openai/gpt-4o-mini"
 
 EVENING_HOUR = 21
 EVENING_MINUTE = 0
-MIN_XP_PASS = 30
+MIN_XP_PASS = 0
 FAIL_PENALTY = 20
 
 XP_WEIGHTS = {
-    "duolingo":  1.0,
+    "duolingo":  0.5,
     "reading":   3.0,
     "listening": 0.5,
     "speaking":  5.0,
@@ -48,29 +48,141 @@ SKILL_LEVEL_XP = [0, 50, 150, 350, 700, 1200, 2000]
 
 STREAK_MULTIPLIERS = [(30, 2.5), (14, 2.0), (7, 1.5), (4, 1.2), (0, 1.0)]
 
+# (id, name, emoji, tier, bonus_xp, description, condition, hidden)
 ACHIEVEMENTS = [
-    ("first_day",        "First Day",          "🌟", lambda s: s["total_days"] >= 1),
-    ("streak_3",         "3 Day Streak",        "🔥", lambda s: s["max_streak"] >= 3),
-    ("streak_7",         "7 Day Streak",        "⚡", lambda s: s["max_streak"] >= 7),
-    ("streak_14",        "2 Week Streak",       "💎", lambda s: s["max_streak"] >= 14),
-    ("streak_30",        "30 Day Streak",       "👑", lambda s: s["max_streak"] >= 30),
-    ("streak_60",        "60 Day Streak",       "🌙", lambda s: s["max_streak"] >= 60),
-    ("streak_100",       "100 Day Streak",      "💫", lambda s: s["max_streak"] >= 100),
-    ("streak_365",       "Year Streak",         "🌍", lambda s: s["max_streak"] >= 365),
-    ("xp_100",           "First 100 XP",        "💯", lambda s: s["total_xp"] >= 100),
-    ("xp_500",           "500 XP Club",         "🏆", lambda s: s["total_xp"] >= 500),
-    ("xp_1000",          "1K XP",               "⭐", lambda s: s["total_xp"] >= 1000),
-    ("xp_5000",          "5K XP",               "🌠", lambda s: s["total_xp"] >= 5000),
-    ("xp_10000",         "10K XP Legend",       "🔮", lambda s: s["total_xp"] >= 10000),
-    ("pass_50",          "50 PASS Days",         "📅", lambda s: s["total_days"] >= 50),
-    ("pass_100",         "100 PASS Days",        "🏅", lambda s: s["total_days"] >= 100),
-    ("pass_200",         "200 PASS Days",        "🎖", lambda s: s["total_days"] >= 200),
-    ("speaking_5",       "Speaking x5",          "🗣", lambda s: s["speaking_sessions"] >= 5),
-    ("reading_100",      "Reading 100 pages",    "📚", lambda s: s["reading_pages"] >= 100),
-    ("srs_50",           "SRS 50 reviews",       "🃏", lambda s: s["srs_reviews"] >= 50),
-    ("level_5",          "Level 5",              "⚔️", lambda s: s["level"] >= 5),
-    ("consistency",      "Consistency Master",   "🎯", lambda s: s["total_days"] >= 30 and s["max_streak"] >= 20),
+    # ── FIRST STEPS ──────────────────────────────────────────────────────────
+    ("first_day",     "First Step",         "🌱", "bronze",    10,
+     "Complete your very first check-in",
+     lambda s: s["total_days"] >= 1, False),
+
+    # ── STREAK ───────────────────────────────────────────────────────────────
+    ("streak_3",      "Spark",              "🔥", "bronze",    10,
+     "3-day streak",                        lambda s: s["max_streak"] >= 3,   False),
+    ("streak_7",      "On Fire",            "⚡", "silver",    25,
+     "7-day streak",                        lambda s: s["max_streak"] >= 7,   False),
+    ("streak_14",     "Two Weeks Strong",   "💎", "silver",    25,
+     "14-day streak",                       lambda s: s["max_streak"] >= 14,  False),
+    ("streak_30",     "Monthly Warrior",    "👑", "gold",      50,
+     "30-day streak",                       lambda s: s["max_streak"] >= 30,  False),
+    ("streak_60",     "Iron Will",          "🌙", "gold",      50,
+     "60-day streak",                       lambda s: s["max_streak"] >= 60,  False),
+    ("streak_100",    "Century",            "💫", "legendary", 100,
+     "100-day streak",                      lambda s: s["max_streak"] >= 100, False),
+    ("streak_180",    "Half Year Hero",     "🌠", "legendary", 100,
+     "180-day streak",                      lambda s: s["max_streak"] >= 180, False),
+    ("streak_365",    "Year Legend",        "🌍", "legendary", 100,
+     "365-day streak — a full year",        lambda s: s["max_streak"] >= 365, False),
+
+    # ── XP ───────────────────────────────────────────────────────────────────
+    ("xp_100",        "First 100",          "💯", "bronze",    10,
+     "Earn 100 total XP",                   lambda s: s["total_xp"] >= 100,   False),
+    ("xp_500",        "Rising Star",        "⭐", "bronze",    10,
+     "Earn 500 total XP",                   lambda s: s["total_xp"] >= 500,   False),
+    ("xp_1000",       "1K Club",            "🏆", "silver",    25,
+     "Earn 1,000 total XP",                 lambda s: s["total_xp"] >= 1000,  False),
+    ("xp_2500",       "Grinder",            "🎯", "silver",    25,
+     "Earn 2,500 total XP",                 lambda s: s["total_xp"] >= 2500,  False),
+    ("xp_5000",       "5K Legend",          "🌟", "gold",      50,
+     "Earn 5,000 total XP",                 lambda s: s["total_xp"] >= 5000,  False),
+    ("xp_10000",      "Grandmaster",        "🔮", "legendary", 100,
+     "Earn 10,000 total XP",                lambda s: s["total_xp"] >= 10000, False),
+
+    # ── PASS DAYS ────────────────────────────────────────────────────────────
+    ("pass_10",       "Getting Started",    "📅", "bronze",    10,
+     "10 PASS days",                        lambda s: s["total_days"] >= 10,  False),
+    ("pass_25",       "Habit Forming",      "📆", "bronze",    10,
+     "25 PASS days",                        lambda s: s["total_days"] >= 25,  False),
+    ("pass_50",       "Halfway Hero",       "🗓", "silver",    25,
+     "50 PASS days",                        lambda s: s["total_days"] >= 50,  False),
+    ("pass_100",      "Triple Digits",      "🏅", "gold",      50,
+     "100 PASS days",                       lambda s: s["total_days"] >= 100, False),
+    ("pass_200",      "Unstoppable",        "🎖", "legendary", 100,
+     "200 PASS days",                       lambda s: s["total_days"] >= 200, False),
+    ("pass_365",      "Year of English",    "🎓", "legendary", 100,
+     "365 PASS days total",                 lambda s: s["total_days"] >= 365, False),
+
+    # ── READING ──────────────────────────────────────────────────────────────
+    ("read_50",       "Page Turner",        "📖", "bronze",    10,
+     "Read 50 pages in English",            lambda s: s["reading_pages"] >= 50,   False),
+    ("read_100",      "Bookworm",           "📚", "silver",    25,
+     "Read 100 pages in English",           lambda s: s["reading_pages"] >= 100,  False),
+    ("read_300",      "Avid Reader",        "📕", "gold",      50,
+     "Read 300 pages in English",           lambda s: s["reading_pages"] >= 300,  False),
+    ("read_1000",     "Literary Lion",      "🦁", "legendary", 100,
+     "Read 1,000 pages in English",         lambda s: s["reading_pages"] >= 1000, False),
+
+    # ── SPEAKING ─────────────────────────────────────────────────────────────
+    ("speak_5",       "First Words",        "🗣", "bronze",    10,
+     "5 speaking sessions",                 lambda s: s["speaking_sessions"] >= 5,   False),
+    ("speak_20",      "Conversationalist",  "💬", "silver",    25,
+     "20 speaking sessions",                lambda s: s["speaking_sessions"] >= 20,  False),
+    ("speak_50",      "Smooth Talker",      "🎤", "gold",      50,
+     "50 speaking sessions",                lambda s: s["speaking_sessions"] >= 50,  False),
+    ("speak_100",     "Orator",             "🎭", "legendary", 100,
+     "100 speaking sessions",               lambda s: s["speaking_sessions"] >= 100, False),
+
+    # ── LISTENING ────────────────────────────────────────────────────────────
+    ("listen_60",     "First Hour",         "🎧", "bronze",    10,
+     "60 minutes of listening",             lambda s: s["listening_minutes"] >= 60,   False),
+    ("listen_300",    "Tuned In",           "🎵", "silver",    25,
+     "300 minutes of listening",            lambda s: s["listening_minutes"] >= 300,  False),
+    ("listen_1000",   "Audio Addict",       "🎶", "gold",      50,
+     "1,000 minutes of listening",          lambda s: s["listening_minutes"] >= 1000, False),
+
+    # ── SRS ──────────────────────────────────────────────────────────────────
+    ("srs_20",        "Card Collector",     "🃏", "bronze",    10,
+     "20 SRS reviews",                      lambda s: s["srs_reviews"] >= 20,  False),
+    ("srs_50",        "Flashcard Fan",      "🎴", "silver",    25,
+     "50 SRS reviews",                      lambda s: s["srs_reviews"] >= 50,  False),
+    ("srs_200",       "Memory Master",      "🧠", "gold",      50,
+     "200 SRS reviews",                     lambda s: s["srs_reviews"] >= 200, False),
+
+    # ── WRITING ──────────────────────────────────────────────────────────────
+    ("write_5",       "First Draft",        "✍️", "bronze",    10,
+     "5 writing sessions",                  lambda s: s["writing_essays"] >= 5,  False),
+    ("write_20",      "Wordsmith",          "📝", "silver",    25,
+     "20 writing sessions",                 lambda s: s["writing_essays"] >= 20, False),
+    ("write_50",      "Author",             "📓", "gold",      50,
+     "50 writing sessions",                 lambda s: s["writing_essays"] >= 50, False),
+
+    # ── RECORDS ──────────────────────────────────────────────────────────────
+    ("perfect_week",  "Perfect Week",       "🌈", "gold",      50,
+     "7/7 PASS days in one calendar week",  lambda s: s.get("perfect_weeks", 0) >= 1,  False),
+    ("perfect_month", "Flawless Month",     "🌕", "legendary", 100,
+     "All days PASS in one full month",     lambda s: s.get("perfect_months", 0) >= 1, False),
+    ("week_200xp",    "Power Week",         "🚀", "gold",      50,
+     "200+ XP earned in a single week",     lambda s: s.get("best_week_xp", 0) >= 200, False),
+
+    # ── LEVEL ────────────────────────────────────────────────────────────────
+    ("level_3",       "Adventurer",         "⚔️", "silver",    25,
+     "Reach Level 3",                       lambda s: s["level"] >= 3, False),
+    ("level_5",       "Champion",           "🛡", "gold",      50,
+     "Reach Level 5",                       lambda s: s["level"] >= 5, False),
+    ("level_7",       "Elite",              "👑", "legendary", 100,
+     "Reach Level 7",                       lambda s: s["level"] >= 7, False),
+
+    # ── CONSISTENCY ──────────────────────────────────────────────────────────
+    ("consistency",   "Consistency Master", "🎯", "gold",      50,
+     "30 PASS days with streak 20+",
+     lambda s: s["total_days"] >= 30 and s["max_streak"] >= 20, False),
+
+    # ── SECRET / HIDDEN ──────────────────────────────────────────────────────
+    ("comeback_kid",  "Comeback Kid",       "💪", "secret",    30,
+     "PASS after 3 consecutive FAILs",      lambda s: s.get("comeback_kid", False),      True),
+    ("night_owl",     "Night Owl",          "🦉", "secret",    30,
+     "Check in after 22:00 on 3 occasions", lambda s: s.get("night_owl_count", 0) >= 3,  True),
+    ("renaissance",   "Renaissance",        "🌟", "secret",    50,
+     "Use all 6 skills in a single day",    lambda s: s.get("all_skills_day", False),     True),
+    ("marathon_read", "Marathon Reader",    "📖", "secret",    30,
+     "Read 20+ pages in a single day",      lambda s: s.get("max_day_pages", 0) >= 20,   True),
+    ("curious_cat",   "Curious Cat",        "😺", "secret",    20,
+     "Ask Harvi 10 questions",              lambda s: s.get("ai_questions", 0) >= 10,    True),
+    ("speak_warrior", "Speaking Warrior",   "🗡", "secret",    40,
+     "Speaking in 7 consecutive PASS days", lambda s: s.get("speak_streak_7", False),    True),
 ]
+
+TIER_LABEL = {"bronze": "🥉 Bronze", "silver": "🥈 Silver",
+              "gold": "🥇 Gold",     "legendary": "💎 Legendary", "secret": "🎭 Secret"}
 
 WEEKLY_QUESTS = {
     1: [("Duolingo 5 дней", "duo_days", 5), ("Reading 30 стр", "reading_pages", 30),
@@ -380,6 +492,96 @@ def get_all_stats():
     return stats
 
 
+def get_extended_stats() -> dict:
+    """get_all_stats() + extra fields for achievements."""
+    stats = get_all_stats()
+    conn  = sqlite3.connect(DB_PATH)
+    rows  = conn.execute(
+        "SELECT log_date, status, reading_pages, speaking_sessions, "
+        "duo_xp, listening_min, srs_reviews, writing_min, raw_xp, multiplier "
+        "FROM daily_log ORDER BY log_date"
+    ).fetchall()
+    conn.close()
+
+    import calendar as _cal
+    from collections import defaultdict
+    weeks_status  = defaultdict(list)
+    months_status = defaultdict(list)
+    week_xp       = defaultdict(float)
+
+    for r in rows:
+        log_date_str, status = r[0], r[1]
+        try:
+            d = datetime.strptime(log_date_str, "%Y-%m-%d").date()
+        except Exception:
+            continue
+        iso = d.isocalendar()
+        wk  = (iso[0], iso[1])
+        mo  = (d.year, d.month)
+        weeks_status[wk].append(status)
+        months_status[mo].append(status)
+        if status == "PASS":
+            week_xp[wk] += r[8] * r[9]
+
+    perfect_weeks  = sum(1 for days in weeks_status.values()
+                         if len(days) == 7 and all(s == "PASS" for s in days))
+    perfect_months = 0
+    for (yr, mo), statuses in months_status.items():
+        if len(statuses) == _cal.monthrange(yr, mo)[1] and all(s == "PASS" for s in statuses):
+            perfect_months += 1
+
+    best_week_xp   = max(week_xp.values(), default=0.0)
+    max_day_pages  = max((r[2] for r in rows if r[1] == "PASS"), default=0)
+
+    # speaking 7-day consecutive streak
+    speak_streak_7 = False
+    consec = 0
+    for r in rows:
+        if r[1] == "PASS" and r[3] > 0:
+            consec += 1
+            if consec >= 7:
+                speak_streak_7 = True
+                break
+        else:
+            consec = 0
+
+    # all 6 skills in one day
+    all_skills_day = any(
+        r[1] == "PASS" and r[4] > 0 and r[2] > 0 and r[5] > 0
+        and r[3] > 0 and r[6] > 0 and r[7] > 0
+        for r in rows
+    )
+
+    # comeback kid: PASS after 3 consecutive FAILs
+    comeback_kid = False
+    for i in range(3, len(rows)):
+        if (rows[i][1] == "PASS" and
+                rows[i-1][1] == "FAIL" and
+                rows[i-2][1] == "FAIL" and
+                rows[i-3][1] == "FAIL"):
+            comeback_kid = True
+            break
+
+    night_owl_count = int(get_config("night_owl_count")    or 0)
+    ai_questions    = int(get_config("ai_questions_count") or 0)
+    ach_bonus       = float(get_config("achievement_bonus_total") or 0)
+
+    stats.update({
+        "perfect_weeks":   perfect_weeks,
+        "perfect_months":  perfect_months,
+        "best_week_xp":    best_week_xp,
+        "max_day_pages":   max_day_pages,
+        "speak_streak_7":  speak_streak_7,
+        "all_skills_day":  all_skills_day,
+        "comeback_kid":    comeback_kid,
+        "night_owl_count": night_owl_count,
+        "ai_questions":    ai_questions,
+        "achievement_bonus": ach_bonus,
+    })
+    stats["total_xp"] = stats["total_xp"] + ach_bonus
+    return stats
+
+
 def get_prev_total_xp() -> float:
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute("SELECT total_xp FROM daily_log ORDER BY log_date DESC LIMIT 1").fetchone()
@@ -408,7 +610,7 @@ def save_day(duo_xp, reading, listening, speaking, srs, writing, duo_total_xp=0,
               srs * XP_WEIGHTS["srs"] +
               writing * XP_WEIGHTS["writing"])
 
-    status = "PASS" if raw_xp >= MIN_XP_PASS else "FAIL"
+    status = "PASS" if raw_xp > 0 else "FAIL"
     penalty = FAIL_PENALTY if status == "FAIL" else 0
 
     streak = (prev_streak + 1) if status == "PASS" else 0
@@ -453,12 +655,43 @@ def save_day(duo_xp, reading, listening, speaking, srs, writing, duo_total_xp=0,
         except Exception as e:
             logging.warning(f"Supabase save_day error: {e}")
 
+    # track night owl (checkin after 22:00)
+    if datetime.now().hour >= 22:
+        owl = int(get_config("night_owl_count") or 0)
+        set_config("night_owl_count", str(owl + 1))
+
     return {
         "raw_xp": raw_xp, "final_xp": final_xp, "total_xp": total_xp,
         "streak": streak, "multiplier": multiplier, "status": status, "penalty": penalty,
         "duo_xp": duo_xp, "reading": reading, "listening": listening,
         "speaking": speaking, "srs": srs, "writing": writing,
     }
+
+
+def fetch_duolingo_profile() -> dict:
+    """Fetch enriched Duolingo profile from public API."""
+    try:
+        r = requests.get(
+            f"https://www.duolingo.com/2017-06-30/users?username={DUOLINGO_USERNAME}",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return {}
+        u = r.json().get("users", [{}])[0]
+        streak_data = u.get("streakData", {}).get("currentStreak", {})
+        courses = u.get("courses", [])
+        en_course = next((c for c in courses if c.get("learningLanguage") == "en"), {})
+        return {
+            "duo_total_xp":   u.get("totalXp", 0),
+            "duo_streak":     u.get("streak", 0),
+            "streak_start":   streak_data.get("startDate", ""),
+            "en_xp":          en_course.get("xp", 0),
+            "courses_count":  len(courses),
+            "learning_since": u.get("creationDate", ""),
+        }
+    except Exception:
+        return {}
 
 
 def build_harvi_system() -> str:
@@ -473,26 +706,51 @@ def build_harvi_system() -> str:
     conn.close()
     today_status = f"{row[0]} ({row[1]:.0f} raw XP)" if row else "not checked in yet"
 
+    duo = fetch_duolingo_profile()
+    duo_block = ""
+    if duo:
+        streak_start = duo.get("streak_start", "")
+        months_learning = ""
+        if streak_start:
+            try:
+                from datetime import datetime as dt
+                start = dt.strptime(streak_start, "%Y-%m-%d").date()
+                delta = (date.today() - start).days
+                months_learning = f"{delta // 30} months ({delta} days) without breaking"
+            except Exception:
+                pass
+        duo_block = f"""
+DUOLINGO HISTORY (real data from API):
+- Total Duolingo XP: {duo.get('duo_total_xp', 0):,} XP (English course only)
+- Current Duolingo streak: {duo.get('duo_streak', 0)} days
+- This streak runs since: {streak_start} — {months_learning}
+- English XP on Duolingo: {duo.get('en_xp', 0):,}
+- Assessment: With {duo.get('duo_total_xp', 0):,} XP and a {duo.get('duo_streak', 0)}-day unbroken streak \
+the user has solid daily practice discipline. XP at this level typically reflects \
+upper A2–B1 Duolingo progress with strong consistency."""
+
     return f"""You are Harvi — a chubby tabby cat with glasses who loves English.
 You are Vladimir's personal English study buddy in Telegram. You know him well.
 
-USER STATE RIGHT NOW:
-- English level: {eng_lvl}
+USER PROFILE:
+- Self-assessed English level: {eng_lvl}
 - Weak area: {eng_wk}
-- Current streak: {stats['current_streak']} days
-- Total XP: {stats['total_xp']:.0f}
+- RPG streak (this app): {stats['current_streak']} days
+- Total RPG XP: {stats['total_xp']:.0f}
 - Total PASS days: {stats['total_days']}
 - Today: {today_status}
+{duo_block}
 
 YOUR PERSONALITY:
 - Warm, witty, like a smart friend — never a teacher lecturing
 - Light humor, occasional cat pun is fine
 - Short answers (under 120 words) unless explaining grammar — then up to 200
-- Adapt vocabulary complexity to {eng_lvl} level
+- Adapt vocabulary and grammar complexity to {eng_lvl} level
 - Always encouraging, never preachy
 - When explaining grammar: give 2 real-life examples, keep it simple
 - You can speak both English and Russian — mirror whatever language Vladimir uses
-- Never repeat the same opener twice in a row"""
+- Never repeat the same opener twice in a row
+- When referencing his Duolingo history, use the real numbers above — be specific"""
 
 
 def call_openrouter(system: str, user_msg: str, history: list = None, max_tokens: int = 350) -> str:
@@ -536,6 +794,62 @@ async def handle_free_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     history.append({"role": "assistant", "content": reply})
     ctx.user_data["chat_history"] = history[-10:]
     await update.message.reply_text(reply)
+
+    # track questions for Curious Cat achievement
+    q_count = int(get_config("ai_questions_count") or 0) + 1
+    set_config("ai_questions_count", str(q_count))
+    if q_count in (10, 25, 50):
+        ext = get_extended_stats()
+        chat_id_str = get_config("chat_id")
+        if chat_id_str:
+            await check_and_unlock_achievements(ext, bot=ctx.bot, chat_id=int(chat_id_str))
+
+
+def generate_achievement_message(name: str, desc: str, tier: str, bonus_xp: int) -> str:
+    tier_label = TIER_LABEL.get(tier, tier)
+    system = build_harvi_system()
+    prompt = (
+        f"Vladimir just unlocked the achievement '{name}' ({tier_label}) — {desc}. "
+        f"He earns +{bonus_xp} bonus XP. Write a short, genuine congratulation "
+        f"(2-3 sentences). Be specific about this achievement. Make it feel earned."
+    )
+    return call_openrouter(system, prompt, max_tokens=120) or f"🎉 *{name}* — {desc}! +{bonus_xp} XP!"
+
+
+async def check_and_unlock_achievements(
+    stats: dict,
+    bot=None,
+    chat_id: int = None,
+) -> list:
+    """Check all achievements, unlock new ones, optionally send Telegram messages."""
+    newly = []
+    for ach_id, name, emoji, tier, bonus_xp, desc, condition, hidden in ACHIEVEMENTS:
+        try:
+            if not condition(stats):
+                continue
+        except Exception:
+            continue
+        if get_config(f"ach_{ach_id}"):
+            continue
+        # ── unlock ──
+        set_config(f"ach_{ach_id}", "1")
+        prev_bonus = float(get_config("achievement_bonus_total") or 0)
+        set_config("achievement_bonus_total", str(prev_bonus + bonus_xp))
+        newly.append((name, emoji, tier, bonus_xp, desc))
+        if bot and chat_id:
+            harvi_msg = generate_achievement_message(name, desc, tier, bonus_xp)
+            text = (
+                f"{emoji} *Achievement Unlocked!*\n"
+                f"{TIER_LABEL[tier]} — *{name}*\n"
+                f"_{desc}_\n\n"
+                f"💰 +{bonus_xp} XP bonus!\n\n"
+                f"{harvi_msg}"
+            )
+            try:
+                await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+            except Exception as e:
+                log.warning(f"Achievement message failed: {e}")
+    return newly
 
 
 def make_keyboard(values: list, prefix: str) -> InlineKeyboardMarkup:
@@ -619,14 +933,29 @@ def build_stats_card(stats: dict) -> str:
 
 
 def build_achievements_card(stats: dict) -> str:
-    lines = ["🏆 ACHIEVEMENTS\n" + "━" * 24]
-    for ach_id, name, emoji, condition in ACHIEVEMENTS:
+    unlocked, locked = [], []
+    for ach_id, name, emoji, tier, bonus_xp, desc, condition, hidden in ACHIEVEMENTS:
         try:
-            unlocked = condition(stats)
+            met = condition(stats)
         except Exception:
-            unlocked = False
-        status = "✅" if unlocked else "🔒"
-        lines.append(f"{status} {emoji} {name}")
+            met = False
+        if hidden and not get_config(f"ach_{ach_id}"):
+            continue  # secret — don't reveal
+        tier_lbl = TIER_LABEL.get(tier, tier)
+        if met or get_config(f"ach_{ach_id}"):
+            unlocked.append(f"✅ {emoji} {name}  [{tier_lbl}]")
+        else:
+            locked.append(f"🔒 {emoji} {name}  [{tier_lbl}]")
+
+    lines = [f"🏆 ACHIEVEMENTS — {len(unlocked)}/{len(unlocked)+len(locked)}\n" + "━" * 28]
+    if unlocked:
+        lines.append("✨ UNLOCKED:")
+        lines.extend(unlocked)
+    if locked:
+        lines.append("\n🔒 LOCKED:")
+        lines.extend(locked[:8])
+        if len(locked) > 8:
+            lines.append(f"  … and {len(locked)-8} more")
     return "\n".join(lines)
 
 
@@ -801,7 +1130,7 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_achievements(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    stats = get_all_stats()
+    stats = get_extended_stats()
     await update.message.reply_text(f"```\n{build_achievements_card(stats)}\n```", parse_mode="Markdown")
 
 
@@ -929,18 +1258,6 @@ async def ask_writing_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     card = build_result_card(data)
 
-    stats = get_all_stats()
-    new_achievements = []
-    for ach_id, name, emoji, condition in ACHIEVEMENTS:
-        try:
-            if condition(stats):
-                prev_key = f"ach_{ach_id}"
-                if not get_config(prev_key):
-                    set_config(prev_key, "1")
-                    new_achievements.append(f"{emoji} {name}")
-        except Exception:
-            pass
-
     prev_level_xp = data["total_xp"] - data["final_xp"]
     old_lvl = sum(1 for t in OVERALL_LEVEL_XP if prev_level_xp >= t)
     new_lvl = sum(1 for t in OVERALL_LEVEL_XP if data["total_xp"] >= t)
@@ -949,10 +1266,19 @@ async def ask_writing_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     result = f"```\n{card}\n```"
     if leveled_up:
         result += f"\n\n🎊 *LEVEL UP!* ⚔️ {old_lvl} → {new_lvl}\nHarvi, you just leveled up! 👑 Keep going!"
-    if new_achievements:
-        result += "\n\n🎉 *New achievements!*\n" + "\n".join(new_achievements)
 
     await query.edit_message_text(result, parse_mode="Markdown")
+
+    # check achievements after checkin — send separately as individual messages
+    chat_id_str = get_config("chat_id")
+    if chat_id_str:
+        ext_stats = get_extended_stats()
+        await check_and_unlock_achievements(
+            ext_stats,
+            bot=query.get_bot(),
+            chat_id=int(chat_id_str),
+        )
+
     return ConversationHandler.END
 
 

@@ -30,7 +30,7 @@ if _SUPABASE_URL and _SUPABASE_KEY:
     except Exception:
         _supa = None
 
-XP_WEIGHTS = {"duolingo": 1.0, "reading": 3.0, "listening": 0.5, "speaking": 5.0, "srs": 1.0, "writing": 2.0}
+XP_WEIGHTS = {"duolingo": 0.5, "reading": 3.0, "listening": 0.5, "speaking": 5.0, "srs": 1.0, "writing": 2.0}
 SKILL_LEVEL_XP = [0, 50, 150, 350, 700, 1200, 2000]
 OVERALL_LEVEL_XP = [0, 100, 300, 700, 1500, 3000, 6000, 10000]
 
