@@ -27,6 +27,9 @@ if _SUPABASE_URL and _SUPABASE_KEY:
     except Exception:
         _supa = None
 
+OPENROUTER_KEY = os.getenv("OPENROUTER_KEY", "")
+OPENROUTER_MODEL = "openai/gpt-4o-mini"
+
 EVENING_HOUR = 21
 EVENING_MINUTE = 0
 MIN_XP_PASS = 30
@@ -456,6 +459,83 @@ def save_day(duo_xp, reading, listening, speaking, srs, writing, duo_total_xp=0,
         "duo_xp": duo_xp, "reading": reading, "listening": listening,
         "speaking": speaking, "srs": srs, "writing": writing,
     }
+
+
+def build_harvi_system() -> str:
+    stats   = get_all_stats()
+    eng_lvl = get_config("english_level") or "B1"
+    eng_wk  = get_config("english_weak")  or "speaking"
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT status, raw_xp FROM daily_log WHERE log_date=?",
+        (date.today().isoformat(),)
+    ).fetchone()
+    conn.close()
+    today_status = f"{row[0]} ({row[1]:.0f} raw XP)" if row else "not checked in yet"
+
+    return f"""You are Harvi — a chubby tabby cat with glasses who loves English.
+You are Vladimir's personal English study buddy in Telegram. You know him well.
+
+USER STATE RIGHT NOW:
+- English level: {eng_lvl}
+- Weak area: {eng_wk}
+- Current streak: {stats['current_streak']} days
+- Total XP: {stats['total_xp']:.0f}
+- Total PASS days: {stats['total_days']}
+- Today: {today_status}
+
+YOUR PERSONALITY:
+- Warm, witty, like a smart friend — never a teacher lecturing
+- Light humor, occasional cat pun is fine
+- Short answers (under 120 words) unless explaining grammar — then up to 200
+- Adapt vocabulary complexity to {eng_lvl} level
+- Always encouraging, never preachy
+- When explaining grammar: give 2 real-life examples, keep it simple
+- You can speak both English and Russian — mirror whatever language Vladimir uses
+- Never repeat the same opener twice in a row"""
+
+
+def call_openrouter(system: str, user_msg: str, history: list = None, max_tokens: int = 350) -> str:
+    if not OPENROUTER_KEY:
+        return ""
+    messages = [{"role": "system", "content": system}]
+    if history:
+        messages.extend(history[-8:])
+    messages.append({"role": "user", "content": user_msg})
+    try:
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://t.me/MyEnglishBro_bot",
+                "X-Title": "EnglishBro Harvi",
+            },
+            json={"model": OPENROUTER_MODEL, "messages": messages, "max_tokens": max_tokens},
+            timeout=30,
+        )
+        if resp.status_code == 200:
+            return resp.json()["choices"][0]["message"]["content"].strip()
+        log.error(f"OpenRouter {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        log.error(f"OpenRouter exception: {e}")
+    return ""
+
+
+async def handle_free_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_msg = update.message.text.strip()
+    if not user_msg:
+        return
+    system  = build_harvi_system()
+    history = ctx.user_data.get("chat_history", [])
+    await ctx.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    reply = call_openrouter(system, user_msg, history, max_tokens=400)
+    if not reply:
+        reply = "Sorry, my brain went offline for a sec. Try again! 😅"
+    history.append({"role": "user",      "content": user_msg})
+    history.append({"role": "assistant", "content": reply})
+    ctx.user_data["chat_history"] = history[-10:]
+    await update.message.reply_text(reply)
 
 
 def make_keyboard(values: list, prefix: str) -> InlineKeyboardMarkup:
@@ -1177,6 +1257,30 @@ async def checkin_final_reminder_job(ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def midday_message_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """13:00 — proactive AI message: question, mini-story, tip or friendly check-in."""
+    chat_id = get_config("chat_id")
+    if not chat_id:
+        return
+    import random
+    system = build_harvi_system()
+    prompt = random.choice([
+        "Send a short friendly midday message. Ask one fun question about their day "
+        "and sneak in a short English practice — one sentence to translate or complete.",
+        "Give Vladimir a mini writing prompt for today — 2 sentences max, fun topic, "
+        "appropriate for his level. Encourage him to reply.",
+        "Share one practical English phrase or idiom he can use TODAY. "
+        "Give a real example, keep it punchy.",
+        "Ask Vladimir one interesting question in English he should think about and "
+        "answer out loud (speaking practice). Make it relevant to his life.",
+        "Give a quick grammar tip that fixes a common mistake at his level. "
+        "One rule, two examples, done.",
+    ])
+    text = call_openrouter(system, prompt, max_tokens=180)
+    if text:
+        await ctx.bot.send_message(chat_id=int(chat_id), text=text)
+
+
 async def evening_checkin_job(ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = get_config("chat_id")
     if not chat_id:
@@ -1250,6 +1354,8 @@ def main():
         fallbacks=[],
     )
 
+    from telegram.ext import MessageHandler, filters
+
     app.add_handler(CommandHandler("start",        cmd_start))
     app.add_handler(CommandHandler("stats",        cmd_stats))
     app.add_handler(CommandHandler("achievements", cmd_achievements))
@@ -1259,8 +1365,11 @@ def main():
     app.add_handler(CommandHandler("edit",         cmd_edit))
     app.add_handler(conv)
     app.add_handler(level_conv)
+    # free-text AI — must be last
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_free_text))
 
     app.job_queue.run_daily(morning_recommendation_job, time=dtime(hour=10, minute=0))
+    app.job_queue.run_daily(midday_message_job,         time=dtime(hour=13, minute=0))
     app.job_queue.run_daily(streak_warning_job,         time=dtime(hour=19, minute=0))
     app.job_queue.run_daily(checkin_final_reminder_job, time=dtime(hour=20, minute=30))
     app.job_queue.run_daily(evening_checkin_job,        time=dtime(hour=EVENING_HOUR, minute=EVENING_MINUTE))
