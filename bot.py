@@ -46,18 +46,27 @@ SKILL_LEVEL_XP = [0, 50, 150, 350, 700, 1200, 2000]
 STREAK_MULTIPLIERS = [(30, 2.5), (14, 2.0), (7, 1.5), (4, 1.2), (0, 1.0)]
 
 ACHIEVEMENTS = [
-    ("first_day",        "First Day",         "🌟", lambda s: s["total_days"] >= 1),
-    ("streak_3",         "3 Day Streak",       "🔥", lambda s: s["max_streak"] >= 3),
-    ("streak_7",         "7 Day Streak",       "⚡", lambda s: s["max_streak"] >= 7),
-    ("streak_14",        "2 Week Streak",      "💎", lambda s: s["max_streak"] >= 14),
-    ("streak_30",        "30 Day Streak",      "👑", lambda s: s["max_streak"] >= 30),
-    ("xp_100",           "First 100 XP",       "💯", lambda s: s["total_xp"] >= 100),
-    ("xp_500",           "500 XP Club",        "🏆", lambda s: s["total_xp"] >= 500),
-    ("speaking_5",       "Speaking x5",        "🗣", lambda s: s["speaking_sessions"] >= 5),
-    ("reading_100",      "Reading 100 pages",  "📚", lambda s: s["reading_pages"] >= 100),
-    ("srs_50",           "SRS 50 reviews",     "🃏", lambda s: s["srs_reviews"] >= 50),
-    ("level_5",          "Level 5",            "⚔️", lambda s: s["level"] >= 5),
-    ("consistency",      "Consistency Master", "🎯", lambda s: s["total_days"] >= 30 and s["max_streak"] >= 20),
+    ("first_day",        "First Day",          "🌟", lambda s: s["total_days"] >= 1),
+    ("streak_3",         "3 Day Streak",        "🔥", lambda s: s["max_streak"] >= 3),
+    ("streak_7",         "7 Day Streak",        "⚡", lambda s: s["max_streak"] >= 7),
+    ("streak_14",        "2 Week Streak",       "💎", lambda s: s["max_streak"] >= 14),
+    ("streak_30",        "30 Day Streak",       "👑", lambda s: s["max_streak"] >= 30),
+    ("streak_60",        "60 Day Streak",       "🌙", lambda s: s["max_streak"] >= 60),
+    ("streak_100",       "100 Day Streak",      "💫", lambda s: s["max_streak"] >= 100),
+    ("streak_365",       "Year Streak",         "🌍", lambda s: s["max_streak"] >= 365),
+    ("xp_100",           "First 100 XP",        "💯", lambda s: s["total_xp"] >= 100),
+    ("xp_500",           "500 XP Club",         "🏆", lambda s: s["total_xp"] >= 500),
+    ("xp_1000",          "1K XP",               "⭐", lambda s: s["total_xp"] >= 1000),
+    ("xp_5000",          "5K XP",               "🌠", lambda s: s["total_xp"] >= 5000),
+    ("xp_10000",         "10K XP Legend",       "🔮", lambda s: s["total_xp"] >= 10000),
+    ("pass_50",          "50 PASS Days",         "📅", lambda s: s["total_days"] >= 50),
+    ("pass_100",         "100 PASS Days",        "🏅", lambda s: s["total_days"] >= 100),
+    ("pass_200",         "200 PASS Days",        "🎖", lambda s: s["total_days"] >= 200),
+    ("speaking_5",       "Speaking x5",          "🗣", lambda s: s["speaking_sessions"] >= 5),
+    ("reading_100",      "Reading 100 pages",    "📚", lambda s: s["reading_pages"] >= 100),
+    ("srs_50",           "SRS 50 reviews",       "🃏", lambda s: s["srs_reviews"] >= 50),
+    ("level_5",          "Level 5",              "⚔️", lambda s: s["level"] >= 5),
+    ("consistency",      "Consistency Master",   "🎯", lambda s: s["total_days"] >= 30 and s["max_streak"] >= 20),
 ]
 
 WEEKLY_QUESTS = {
@@ -543,16 +552,43 @@ def build_achievements_card(stats: dict) -> str:
 
 def current_week_of_month() -> int:
     today = date.today()
-    first_day = today.replace(day=1)
     return min(4, (today.day - 1) // 7 + 1)
 
 
-def build_quests_card(stats: dict) -> str:
+def get_week_stats() -> dict:
+    """Stats for Mon–today of the current calendar week."""
+    today = date.today()
+    week_start = (today - timedelta(days=today.weekday())).isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("""
+        SELECT duo_xp, reading_pages, listening_min, speaking_sessions,
+               srs_reviews, writing_min, status
+        FROM daily_log WHERE log_date >= ? AND log_date <= ? ORDER BY log_date
+    """, (week_start, today.isoformat())).fetchall()
+    conn.close()
+    stats = {"duo_days": 0, "reading_pages": 0, "listening_minutes": 0,
+             "speaking_sessions": 0, "srs_reviews": 0, "writing_essays": 0}
+    for duo_xp, reading, listening, speaking, srs, writing, status in rows:
+        if status == "PASS":
+            stats["duo_days"]          += 1 if duo_xp > 0 else 0
+            stats["reading_pages"]     += reading
+            stats["listening_minutes"] += listening
+            stats["speaking_sessions"] += speaking
+            stats["srs_reviews"]       += srs
+            stats["writing_essays"]    += 1 if writing > 0 else 0
+    return stats
+
+
+def build_quests_card() -> str:
     week_num = current_week_of_month()
+    week_stats = get_week_stats()
     quests = WEEKLY_QUESTS.get(week_num, WEEKLY_QUESTS[4])
-    lines = [f"📋 QUESTS — Week {week_num}\n" + "━" * 24]
+    today = date.today()
+    week_start = today - timedelta(days=today.weekday())
+    lines = [f"📋 QUESTS — Week {week_num} of {today.strftime('%B')}\n"
+             f"({week_start.strftime('%d.%m')} – this week)\n" + "━" * 24]
     for name, stat_key, target in quests:
-        current = stats.get(stat_key, 0)
+        current = week_stats.get(stat_key, 0)
         done = current >= target
         bar_w = 8
         pct = min(1.0, current / target)
@@ -671,6 +707,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/level — Set your English profile 🎓\n"
         "/stats — Character card\n"
         "/quests — Weekly challenges\n"
+        "/month — This month's report 📅\n"
         "/achievements — Your badges\n"
         "/week — Last 7 days\n\n"
         "Let's build that streak! 🔥"
@@ -689,8 +726,7 @@ async def cmd_achievements(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_quests(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    stats = get_all_stats()
-    await update.message.reply_text(f"```\n{build_quests_card(stats)}\n```", parse_mode="Markdown")
+    await update.message.reply_text(f"```\n{build_quests_card()}\n```", parse_mode="Markdown")
 
 
 async def cmd_week(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1017,14 +1053,75 @@ def build_weekly_report() -> str:
     return "\n".join(lines)
 
 
+def build_month_card(year: int = None, month: int = None) -> str:
+    import calendar
+    today = date.today()
+    if year is None:  year  = today.year
+    if month is None: month = today.month
+    month_start = f"{year}-{month:02d}-01"
+    next_y, next_m = (year + 1, 1) if month == 12 else (year, month + 1)
+    month_end = f"{next_y}-{next_m:02d}-01"
+
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("""
+        SELECT log_date, duo_xp, reading_pages, listening_min, speaking_sessions,
+               srs_reviews, writing_min, status, streak, raw_xp, multiplier, total_xp
+        FROM daily_log WHERE log_date >= ? AND log_date < ? ORDER BY log_date
+    """, (month_start, month_end)).fetchall()
+    conn.close()
+
+    month_name = calendar.month_name[month]
+    if not rows:
+        return f"📅 {month_name} {year} — no data yet."
+
+    pass_days  = [r for r in rows if r[7] == "PASS"]
+    fail_days  = [r for r in rows if r[7] == "FAIL"]
+    xp_earned  = sum(r[9] * r[10] for r in pass_days)
+    max_streak = max((r[8] for r in rows), default=0)
+    final_xp   = rows[-1][11]
+
+    grade = ("🏆 LEGEND" if len(fail_days) == 0 else
+             "💪 GREAT"  if len(fail_days) <= 2 else
+             "😊 GOOD"   if len(fail_days) <= 5 else
+             "😬 OK"     if len(fail_days) <= 10 else "💔 TOUGH MONTH")
+
+    lines = [
+        f"📅 *{month_name} {year} — Monthly Report*\n",
+        f"Overall: *{grade}*",
+        f"✅ PASS: {len(pass_days)}/{len(rows)}   ❌ FAIL: {len(fail_days)}",
+        f"🔥 Best streak: {max_streak} days",
+        f"⭐ XP earned: {xp_earned:.0f}   |   Total: {final_xp:.0f}\n",
+        f"*Activity:*",
+        f"📱 Duolingo: {sum(r[1] for r in pass_days)} XP",
+        f"📖 Reading:  {sum(r[2] for r in pass_days)} pages",
+        f"🎧 Listening: {sum(r[3] for r in pass_days)} min",
+        f"🗣 Speaking: {sum(r[4] for r in pass_days)} sessions",
+        f"🃏 SRS:      {sum(r[5] for r in pass_days)} cards",
+        f"✍️ Writing:  {sum(r[6] for r in pass_days)} min",
+    ]
+    if len(pass_days) == len(rows):
+        lines.append("\n🎉 *Perfect month — zero fails!* Legendary, Harvi! 🏆")
+    return "\n".join(lines)
+
+
+async def cmd_month(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    card = build_month_card()
+    await update.message.reply_text(card, parse_mode="Markdown")
+
+
 async def morning_recommendation_job(ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = get_config("chat_id")
     if not chat_id:
         return
-    if date.today().weekday() == 0:
+    today = date.today()
+    if today.weekday() == 0:
         report = build_weekly_report()
         if report:
             await ctx.bot.send_message(chat_id=int(chat_id), text=report, parse_mode="Markdown")
+    if today.day == 1:
+        last = (today.replace(day=1) - timedelta(days=1))
+        monthly = build_month_card(last.year, last.month)
+        await ctx.bot.send_message(chat_id=int(chat_id), text=monthly, parse_mode="Markdown")
     text = build_morning_recommendation()
     await ctx.bot.send_message(chat_id=int(chat_id), text=text, parse_mode="Markdown")
 
@@ -1050,6 +1147,31 @@ async def streak_warning_job(ctx: ContextTypes.DEFAULT_TYPE):
             f"{risk_line}\n\n"
             f"You haven't logged today yet.\n"
             f"/checkin takes 30 seconds — let's go! ⚡"
+        ),
+        parse_mode="Markdown"
+    )
+
+
+async def checkin_final_reminder_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """20:30 — last call if no checkin yet."""
+    chat_id = get_config("chat_id")
+    if not chat_id:
+        return
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT status FROM daily_log WHERE log_date=?", (date.today().isoformat(),)
+    ).fetchone()
+    conn.close()
+    if row:
+        return
+    _, duo_streak = fetch_duolingo_xp()
+    risk = f"🔥 {duo_streak}-day streak ends at midnight!" if duo_streak > 0 else "💔 No streak yet — start one NOW!"
+    await ctx.bot.send_message(
+        chat_id=int(chat_id),
+        text=(
+            f"⏰ *Last call, Harvi! 30 minutes left!*\n\n"
+            f"{risk}\n\n"
+            f"30 seconds, buttons only — /checkin 🚀"
         ),
         parse_mode="Markdown"
     )
@@ -1128,17 +1250,19 @@ def main():
         fallbacks=[],
     )
 
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("start",        cmd_start))
+    app.add_handler(CommandHandler("stats",        cmd_stats))
     app.add_handler(CommandHandler("achievements", cmd_achievements))
-    app.add_handler(CommandHandler("quests", cmd_quests))
-    app.add_handler(CommandHandler("week", cmd_week))
-    app.add_handler(CommandHandler("edit", cmd_edit))
+    app.add_handler(CommandHandler("quests",       cmd_quests))
+    app.add_handler(CommandHandler("month",        cmd_month))
+    app.add_handler(CommandHandler("week",         cmd_week))
+    app.add_handler(CommandHandler("edit",         cmd_edit))
     app.add_handler(conv)
     app.add_handler(level_conv)
 
     app.job_queue.run_daily(morning_recommendation_job, time=dtime(hour=10, minute=0))
     app.job_queue.run_daily(streak_warning_job,         time=dtime(hour=19, minute=0))
+    app.job_queue.run_daily(checkin_final_reminder_job, time=dtime(hour=20, minute=30))
     app.job_queue.run_daily(evening_checkin_job,        time=dtime(hour=EVENING_HOUR, minute=EVENING_MINUTE))
 
     log.info("Bot started.")

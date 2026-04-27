@@ -35,18 +35,27 @@ SKILL_LEVEL_XP = [0, 50, 150, 350, 700, 1200, 2000]
 OVERALL_LEVEL_XP = [0, 100, 300, 700, 1500, 3000, 6000, 10000]
 
 ACHIEVEMENTS = [
-    ("first_day",   "First Day",         "🌟", lambda s: s["total_days"] >= 1),
-    ("streak_3",    "3 Day Streak",       "🔥", lambda s: s["max_streak"] >= 3),
-    ("streak_7",    "7 Day Streak",       "⚡", lambda s: s["max_streak"] >= 7),
-    ("streak_14",   "2 Week Streak",      "💎", lambda s: s["max_streak"] >= 14),
-    ("streak_30",   "30 Day Streak",      "👑", lambda s: s["max_streak"] >= 30),
-    ("xp_100",      "First 100 XP",       "💯", lambda s: s["total_xp"] >= 100),
-    ("xp_500",      "500 XP Club",        "🏆", lambda s: s["total_xp"] >= 500),
-    ("speaking_5",  "Speaking x5",        "🗣", lambda s: s["speaking_sessions"] >= 5),
-    ("reading_100", "Reading 100 pages",  "📚", lambda s: s["reading_pages"] >= 100),
-    ("srs_50",      "SRS 50 reviews",     "🃏", lambda s: s["srs_reviews"] >= 50),
-    ("level_5",     "Level 5",            "⚔️", lambda s: s["level"] >= 5),
-    ("consistency", "Consistency Master", "🎯", lambda s: s["total_days"] >= 30 and s["max_streak"] >= 20),
+    ("first_day",   "First Day",           "🌟", lambda s: s["total_days"] >= 1),
+    ("streak_3",    "3 Day Streak",         "🔥", lambda s: s["max_streak"] >= 3),
+    ("streak_7",    "7 Day Streak",         "⚡", lambda s: s["max_streak"] >= 7),
+    ("streak_14",   "2 Week Streak",        "💎", lambda s: s["max_streak"] >= 14),
+    ("streak_30",   "30 Day Streak",        "👑", lambda s: s["max_streak"] >= 30),
+    ("streak_60",   "60 Day Streak",        "🌙", lambda s: s["max_streak"] >= 60),
+    ("streak_100",  "100 Day Streak",       "💫", lambda s: s["max_streak"] >= 100),
+    ("streak_365",  "Year Streak",          "🌍", lambda s: s["max_streak"] >= 365),
+    ("xp_100",      "First 100 XP",         "💯", lambda s: s["total_xp"] >= 100),
+    ("xp_500",      "500 XP Club",          "🏆", lambda s: s["total_xp"] >= 500),
+    ("xp_1000",     "1K XP",               "⭐", lambda s: s["total_xp"] >= 1000),
+    ("xp_5000",     "5K XP",               "🌠", lambda s: s["total_xp"] >= 5000),
+    ("xp_10000",    "10K XP Legend",        "🔮", lambda s: s["total_xp"] >= 10000),
+    ("pass_50",     "50 PASS Days",         "📅", lambda s: s["total_days"] >= 50),
+    ("pass_100",    "100 PASS Days",        "🏅", lambda s: s["total_days"] >= 100),
+    ("pass_200",    "200 PASS Days",        "🎖", lambda s: s["total_days"] >= 200),
+    ("speaking_5",  "Speaking x5",          "🗣", lambda s: s["speaking_sessions"] >= 5),
+    ("reading_100", "Reading 100 pages",    "📚", lambda s: s["reading_pages"] >= 100),
+    ("srs_50",      "SRS 50 reviews",       "🃏", lambda s: s["srs_reviews"] >= 50),
+    ("level_5",     "Level 5",              "⚔️", lambda s: s["level"] >= 5),
+    ("consistency", "Consistency Master",   "🎯", lambda s: s["total_days"] >= 30 and s["max_streak"] >= 20),
 ]
 
 WEEKLY_QUESTS = {
@@ -346,6 +355,37 @@ today_str = date.today().isoformat()
 today_rows = df[df["log_date"] == pd.Timestamp(today_str)] if not df.empty else pd.DataFrame()
 msg_text = cat_message(today_rows, stats)
 
+# ── Sidebar — month filter ────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown(
+        '<p style="color:#C4A8FF; font-family:Space Grotesk,sans-serif; '
+        'font-weight:700; font-size:1rem; margin-bottom:4px;">📅 Period</p>',
+        unsafe_allow_html=True
+    )
+    if not df.empty:
+        periods = sorted(df["log_date"].dt.to_period("M").unique(), reverse=True)
+        month_labels = ["All time"] + [p.strftime("%B %Y") for p in periods]
+        month_sel = st.selectbox("Show:", month_labels, index=0, label_visibility="collapsed")
+        if month_sel != "All time":
+            sel_period = next(p for p in periods if p.strftime("%B %Y") == month_sel)
+            chart_df = df[df["log_date"].dt.to_period("M") == sel_period].copy()
+            chart_stats = get_stats(chart_df)
+        else:
+            chart_df = df.copy()
+            chart_stats = stats
+    else:
+        month_sel = "All time"
+        chart_df = df.copy()
+        chart_stats = stats
+
+    st.markdown("---")
+    st.markdown(
+        '<p style="color:#6A5FA0; font-family:Nunito,sans-serif; font-size:0.75rem;">'
+        '🔗 <a href="https://t.me/MyEnglishBro_bot" style="color:#7B6CF6;">@MyEnglishBro_bot</a>'
+        '</p>',
+        unsafe_allow_html=True
+    )
+
 # ── HERO ─────────────────────────────────────────────────────────────────────
 col_cat, col_greet, col_kpi = st.columns([1.2, 2, 2.2])
 
@@ -552,17 +592,18 @@ st.markdown("---")
 col_left, col_right = st.columns([3, 2])
 
 with col_left:
-    st.markdown('<div class="section-header">📈 XP History</div>', unsafe_allow_html=True)
-    if not df.empty:
+    title_period = f" — {month_sel}" if month_sel != "All time" else ""
+    st.markdown(f'<div class="section-header">📈 XP History{title_period}</div>', unsafe_allow_html=True)
+    if not chart_df.empty:
         fig = make_subplots(specs=[[{"secondary_y": True}]])
-        pass_df = df[df["status"] == "PASS"]
-        fail_df = df[df["status"] == "FAIL"]
+        pass_df = chart_df[chart_df["status"] == "PASS"]
+        fail_df = chart_df[chart_df["status"] == "FAIL"]
         fig.add_trace(go.Bar(x=pass_df["log_date"], y=pass_df["day_xp"],
             name="XP (PASS)", marker_color="#7B6CF6", opacity=0.85), secondary_y=False)
         if not fail_df.empty:
             fig.add_trace(go.Bar(x=fail_df["log_date"], y=[10] * len(fail_df),
                 name="FAIL", marker_color="#F87171", opacity=0.6), secondary_y=False)
-        fig.add_trace(go.Scatter(x=df["log_date"], y=df["total_xp"],
+        fig.add_trace(go.Scatter(x=chart_df["log_date"], y=chart_df["total_xp"],
             name="Total XP", line=dict(color="#C4A8FF", width=2.5),
             mode="lines+markers", marker=dict(size=4, color="#C4A8FF")), secondary_y=True)
         fig.update_layout(
@@ -583,7 +624,7 @@ with col_right:
     st.markdown('<div class="section-header">🕸 Skills Radar</div>', unsafe_allow_html=True)
     skill_labels = ["Duolingo", "Reading", "Listening", "Speaking", "SRS", "Writing"]
     skill_keys   = ["duolingo", "reading", "listening", "speaking", "srs", "writing"]
-    skill_xp_vals = [stats["skill_xp"][k] for k in skill_keys]
+    skill_xp_vals = [chart_stats["skill_xp"][k] for k in skill_keys]
     fig2 = go.Figure(go.Scatterpolar(
         r=skill_xp_vals + [skill_xp_vals[0]],
         theta=skill_labels + [skill_labels[0]],
@@ -608,8 +649,8 @@ col_heat, col_bars = st.columns([3, 2])
 
 with col_heat:
     st.markdown('<div class="section-header">📅 Activity Calendar</div>', unsafe_allow_html=True)
-    if not df.empty:
-        df_h = df.copy()
+    if not chart_df.empty:
+        df_h = chart_df.copy()
         df_h["week"] = df_h["log_date"].dt.isocalendar().week
         df_h["dow"]  = df_h["log_date"].dt.dayofweek
         df_h["color_val"] = df_h.apply(lambda r: r["day_xp"] if r["status"] == "PASS" else -5, axis=1)
@@ -639,14 +680,14 @@ with col_heat:
 with col_bars:
     st.markdown('<div class="section-header">📊 Skill XP</div>', unsafe_allow_html=True)
     skill_colors = ["#7B6CF6", "#34D399", "#38BDF8", "#F472B6", "#A78BFA", "#FBBF24"]
-    skill_levs = [skill_level(stats["skill_xp"][k]) for k in skill_keys]
+    skill_levs = [skill_level(chart_stats["skill_xp"][k]) for k in skill_keys]
 
     week_start = date.today() - timedelta(days=date.today().weekday())
     prev_start = week_start - timedelta(days=7)
-    if not df.empty:
-        this_wdf = df[df["log_date"] >= pd.Timestamp(week_start)]
-        prev_wdf = df[(df["log_date"] >= pd.Timestamp(prev_start)) &
-                      (df["log_date"] < pd.Timestamp(week_start))]
+    if not chart_df.empty:
+        this_wdf = chart_df[chart_df["log_date"] >= pd.Timestamp(week_start)]
+        prev_wdf = chart_df[(chart_df["log_date"] >= pd.Timestamp(prev_start)) &
+                      (chart_df["log_date"] < pd.Timestamp(week_start))]
         def wk_xp(wdf, col, w):
             return float(wdf[wdf["status"] == "PASS"][col].sum()) * w
         this_w = [wk_xp(this_wdf, "duo_xp", 1), wk_xp(this_wdf, "reading_pages", 3),
