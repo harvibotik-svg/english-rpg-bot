@@ -350,14 +350,32 @@ def init_db():
     conn.close()
 
 
+_config_cache: dict = {}
+
+
 def get_config(key):
+    if key in _config_cache:
+        return _config_cache[key]
+    if _supa:
+        try:
+            r = _supa.table("english_config").select("value").eq("key", key).execute()
+            if r.data:
+                val = r.data[0]["value"]
+                _config_cache[key] = val
+                return val
+        except Exception:
+            pass
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute("SELECT value FROM config WHERE key=?", (key,)).fetchone()
     conn.close()
-    return row[0] if row else None
+    val = row[0] if row else None
+    if val is not None:
+        _config_cache[key] = val
+    return val
 
 
 def set_config(key, value):
+    _config_cache[key] = str(value)
     conn = sqlite3.connect(DB_PATH)
     conn.execute("INSERT OR REPLACE INTO config(key,value) VALUES(?,?)", (key, str(value)))
     conn.commit()
@@ -367,6 +385,49 @@ def set_config(key, value):
             _supa.table("english_config").upsert({"key": key, "value": str(value)}, on_conflict="key").execute()
         except Exception as e:
             logging.warning(f"Supabase set_config error: {e}")
+
+
+def seed_from_supabase():
+    """On startup: pull Supabase data into local SQLite so all queries work."""
+    if not _supa:
+        return
+    try:
+        rows = _supa.table("english_config").select("key,value").execute().data or []
+        if rows:
+            conn = sqlite3.connect(DB_PATH)
+            for r in rows:
+                conn.execute("INSERT OR REPLACE INTO config(key,value) VALUES(?,?)", (r["key"], r["value"]))
+                _config_cache[r["key"]] = r["value"]
+            conn.commit()
+            conn.close()
+            log.info(f"Seeded {len(rows)} config keys from Supabase")
+    except Exception as e:
+        log.warning(f"seed_from_supabase config: {e}")
+    try:
+        rows = _supa.table("english_daily_log").select("*").execute().data or []
+        if rows:
+            conn = sqlite3.connect(DB_PATH)
+            for r in rows:
+                conn.execute("""
+                    INSERT OR REPLACE INTO daily_log
+                    (log_date,duo_xp,duo_total_xp,reading_pages,listening_min,
+                     speaking_sessions,srs_reviews,writing_min,writing_topic,
+                     raw_xp,total_xp,streak,multiplier,status,penalty,created_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """, (
+                    r.get("log_date"), r.get("duo_xp",0), r.get("duo_total_xp",0),
+                    r.get("reading_pages",0), r.get("listening_min",0),
+                    r.get("speaking_sessions",0), r.get("srs_reviews",0),
+                    r.get("writing_min",0), r.get("writing_topic",""),
+                    r.get("raw_xp",0), r.get("total_xp",0), r.get("streak",0),
+                    r.get("multiplier",1.0), r.get("status","FAIL"),
+                    r.get("penalty",0), r.get("created_at","")
+                ))
+            conn.commit()
+            conn.close()
+            log.info(f"Seeded {len(rows)} daily_log rows from Supabase")
+    except Exception as e:
+        log.warning(f"seed_from_supabase daily_log: {e}")
 
 
 def fetch_duolingo_xp():
@@ -1656,6 +1717,7 @@ def main():
     atexit.register(release_pid_lock)
 
     init_db()
+    seed_from_supabase()
     asyncio.set_event_loop(asyncio.new_event_loop())
 
     app = Application.builder().token(TOKEN).build()
