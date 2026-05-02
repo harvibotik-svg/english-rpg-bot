@@ -439,6 +439,97 @@ def seed_from_supabase():
         log.warning(f"seed_from_supabase daily_log: {e}")
 
 
+# ── MEMORY ─────────────────────────────────────────────────────────────────────
+
+_memory_cache: list = []
+_memory_cache_ts: float = 0.0
+
+
+def get_memories(limit: int = 40) -> list:
+    """Return list of {category, key, value} from english_memory."""
+    global _memory_cache, _memory_cache_ts
+    import time
+    now = time.time()
+    if _memory_cache and now - _memory_cache_ts < 300:
+        return _memory_cache
+    if _supa:
+        try:
+            rows = (
+                _supa.table("english_memory")
+                .select("category,key,value,updated_at")
+                .order("updated_at", desc=True)
+                .limit(limit)
+                .execute()
+                .data or []
+            )
+            _memory_cache = rows
+            _memory_cache_ts = now
+            return rows
+        except Exception as e:
+            log.warning(f"get_memories error: {e}")
+    return []
+
+
+def save_memory(key: str, value: str, category: str = "general", source: str = "conversation"):
+    """Upsert a memory entry in Supabase."""
+    global _memory_cache_ts
+    _memory_cache_ts = 0  # invalidate cache
+    if not _supa:
+        return
+    try:
+        _supa.table("english_memory").upsert(
+            {"key": key, "value": value, "category": category, "source": source,
+             "updated_at": datetime.utcnow().isoformat()},
+            on_conflict="key"
+        ).execute()
+    except Exception as e:
+        log.warning(f"save_memory error: {e}")
+
+
+def extract_and_save_memories(conversation: list):
+    """Ask AI to extract memorable facts from conversation and save them."""
+    import json, re
+    if not OPENROUTER_KEY or len(conversation) < 4:
+        return
+    history_text = "\n".join(
+        f"{'Vladimir' if m['role'] == 'user' else 'Harvi'}: {m['content']}"
+        for m in conversation[-12:]
+    )
+    prompt = (
+        "Read this conversation and extract facts about Vladimir worth remembering long-term.\n"
+        "Focus on: goals, progress, preferences, problems, milestones, study habits, personal info.\n"
+        "Ignore greetings and small talk. Only extract specific, concrete, useful facts.\n\n"
+        f"CONVERSATION:\n{history_text}\n\n"
+        "Respond ONLY as a JSON array:\n"
+        '[{"key":"snake_case_key","value":"fact description","category":"progress|goals|habits|personal|problems"}]\n'
+        "If nothing worth remembering, respond: []"
+    )
+    try:
+        result = call_openrouter(
+            "You extract structured memory facts from conversations. Return ONLY valid JSON array, nothing else.",
+            prompt, max_tokens=500
+        )
+        if not result:
+            return
+        match = re.search(r'\[.*?\]', result, re.DOTALL)
+        if not match:
+            return
+        facts = json.loads(match.group())
+        count = 0
+        for fact in facts:
+            if isinstance(fact, dict) and "key" in fact and "value" in fact:
+                save_memory(
+                    key=str(fact["key"])[:100],
+                    value=str(fact["value"])[:500],
+                    category=str(fact.get("category", "general"))[:50],
+                )
+                count += 1
+        if count:
+            log.info(f"Extracted {count} memories from conversation")
+    except Exception as e:
+        log.warning(f"extract_and_save_memories error: {e}")
+
+
 def fetch_duolingo_xp():
     """Returns (total_xp, streak) from Duolingo API."""
     try:
@@ -831,6 +922,12 @@ DUOLINGO HISTORY (real data from API):
 the user has solid daily practice discipline. XP at this level typically reflects \
 upper A2–B1 Duolingo progress with strong consistency."""
 
+    memories = get_memories(20)
+    memory_block = ""
+    if memories:
+        mem_lines = [f"- [{m.get('category','general')}] {m['value']}" for m in memories[:15]]
+        memory_block = "\nWHAT YOU REMEMBER ABOUT VLADIMIR (use naturally, don't recite):\n" + "\n".join(mem_lines)
+
     return f"""You are Harvi — a chubby tabby cat with glasses who loves English.
 You are Vladimir's personal English study buddy in Telegram. You know him well.
 
@@ -841,7 +938,7 @@ USER PROFILE:
 - Total RPG XP: {stats['total_xp']:.0f}
 - Total PASS days: {stats['total_days']}
 - Today: {today_status}
-{duo_block}
+{duo_block}{memory_block}
 
 YOUR PERSONALITY:
 - Warm, witty, like a smart friend — never a teacher lecturing
@@ -852,7 +949,8 @@ YOUR PERSONALITY:
 - When explaining grammar: give 2 real-life examples, keep it simple
 - You can speak both English and Russian — mirror whatever language Vladimir uses
 - Never repeat the same opener twice in a row
-- When referencing his Duolingo history, use the real numbers above — be specific"""
+- When referencing his Duolingo history, use the real numbers above — be specific
+- Reference remembered facts naturally when relevant, like a friend who pays attention"""
 
 
 def call_openrouter(system: str, user_msg: str, history: list = None, max_tokens: int = 350) -> str:
@@ -911,6 +1009,11 @@ async def handle_free_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         chat_id_str = get_config("chat_id")
         if chat_id_str:
             await check_and_unlock_achievements(ext, bot=ctx.bot, chat_id=int(chat_id_str))
+
+    # Auto-extract memories every 10 messages
+    full_history = ctx.user_data.get("chat_history", [])
+    if len(full_history) >= 2 and len(full_history) % 10 == 0:
+        extract_and_save_memories(full_history)
 
 
 async def handle_talk_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user_msg: str):
@@ -2125,6 +2228,56 @@ async def cmd_skilltree(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"```\n" + "\n".join(lines) + "\n```", parse_mode="Markdown")
 
 
+async def cmd_memory(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Show what Harvi remembers about Vladimir."""
+    memories = get_memories(50)
+    if not memories:
+        await update.message.reply_text(
+            "🧠 *Harvi's Memory*\n\nNothing stored yet! "
+            "Chat with me for a while and I'll start remembering things about you. 🐱",
+            parse_mode="Markdown"
+        )
+        return
+
+    cat_icons = {
+        "progress": "📊", "goals": "🎯", "habits": "📅",
+        "personal": "👤", "problems": "⚠️", "general": "💡",
+    }
+    by_cat: dict = {}
+    for m in memories:
+        cat = m.get("category", "general").lower()
+        by_cat.setdefault(cat, []).append(m["value"])
+
+    lines = ["🧠 *What Harvi Remembers About You*\n"]
+    for cat in ["progress", "goals", "habits", "personal", "problems", "general"]:
+        items = by_cat.get(cat, [])
+        if not items:
+            continue
+        icon = cat_icons.get(cat, "💬")
+        lines.append(f"{icon} *{cat.capitalize()}*")
+        for v in items[:6]:
+            lines.append(f"  • {v}")
+        lines.append("")
+
+    lines.append(f"_Total: {len(memories)} memories stored_")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_forget(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Clear all Harvi's memories."""
+    if not _supa:
+        await update.message.reply_text("No Supabase connection — nothing to forget.")
+        return
+    try:
+        _supa.table("english_memory").delete().neq("id", 0).execute()
+        global _memory_cache, _memory_cache_ts
+        _memory_cache = []
+        _memory_cache_ts = 0
+        await update.message.reply_text("🗑 Done — my memory has been cleared. Fresh start! 🐱")
+    except Exception as e:
+        await update.message.reply_text(f"Error clearing memory: {e}")
+
+
 PID_FILE = os.path.join(os.path.dirname(__file__), "bot.pid")
 
 
@@ -2194,6 +2347,8 @@ def main():
     app.add_handler(CommandHandler("talk",         cmd_talk))
     app.add_handler(CommandHandler("endtalk",      cmd_endtalk))
     app.add_handler(CommandHandler("skilltree",    cmd_skilltree))
+    app.add_handler(CommandHandler("memory",       cmd_memory))
+    app.add_handler(CommandHandler("forget",       cmd_forget))
     app.add_handler(conv)
     app.add_handler(level_conv)
     # free-text AI — must be last
