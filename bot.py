@@ -201,6 +201,15 @@ WEEKLY_QUESTS = {
 
 ASK_READING, ASK_LISTENING, ASK_SPEAKING, ASK_SRS, ASK_WRITING, ASK_LEVEL, ASK_WEAK = range(7)
 
+BOSSES = [
+    ("Grammar Dragon",    "Complete 3 Writing sessions this week",  "writing_essays",    3,  150),
+    ("Speaking Demon",    "Speak English 5 times this week",        "speaking_sessions", 5,  200),
+    ("Reading Giant",     "Read 50 pages this week",                "reading_pages",     50, 175),
+    ("Vocabulary Hydra",  "Review 30 SRS cards this week",          "srs_reviews",       30, 125),
+    ("Listening Phantom", "Listen for 120 minutes this week",       "listening_minutes", 120, 150),
+    ("Consistency Beast", "Get 7 PASS days this week",              "duo_days",          7,  300),
+]
+
 WRITING_TOPICS = [
     "Describe your favorite place in your hometown.",
     "What is the most important quality in a friend?",
@@ -661,6 +670,19 @@ def get_prev_streak() -> int:
     return 0
 
 
+def get_yesterday_data() -> dict | None:
+    """Return yesterday's log_date row as dict, or None."""
+    conn = sqlite3.connect(DB_PATH)
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    row = conn.execute(
+        "SELECT status, raw_xp, streak FROM daily_log WHERE log_date=?", (yesterday,)
+    ).fetchone()
+    conn.close()
+    if row:
+        return {"status": row[0], "raw_xp": row[1], "streak": row[2]}
+    return None
+
+
 def save_day(duo_xp, reading, listening, speaking, srs, writing, duo_total_xp=0, writing_topic=""):
     prev_total = get_prev_total_xp()
     prev_streak = get_prev_streak()
@@ -674,6 +696,23 @@ def save_day(duo_xp, reading, listening, speaking, srs, writing, duo_total_xp=0,
 
     status = "PASS" if raw_xp > 0 else "FAIL"
     penalty = FAIL_PENALTY if status == "FAIL" else 0
+
+    # Streak Recovery: if yesterday was FAIL but today raw_xp >= 40, recover streak
+    streak_recovered = False
+    yesterday_data = get_yesterday_data()
+    if (status == "PASS" and yesterday_data and
+            yesterday_data["status"] == "FAIL" and raw_xp >= 40):
+        # Recover: continue from the streak before yesterday's fail
+        # Find the streak from 2 days ago
+        conn = sqlite3.connect(DB_PATH)
+        two_days_ago = (date.today() - timedelta(days=2)).isoformat()
+        row2 = conn.execute(
+            "SELECT streak, status FROM daily_log WHERE log_date=?", (two_days_ago,)
+        ).fetchone()
+        conn.close()
+        if row2 and row2[1] == "PASS":
+            prev_streak = row2[0]
+            streak_recovered = True
 
     streak = (prev_streak + 1) if status == "PASS" else 0
     multiplier = get_streak_multiplier(streak)
@@ -727,6 +766,7 @@ def save_day(duo_xp, reading, listening, speaking, srs, writing, duo_total_xp=0,
         "streak": streak, "multiplier": multiplier, "status": status, "penalty": penalty,
         "duo_xp": duo_xp, "reading": reading, "listening": listening,
         "speaking": speaking, "srs": srs, "writing": writing,
+        "streak_recovered": streak_recovered,
     }
 
 
@@ -846,6 +886,12 @@ async def handle_free_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_msg = update.message.text.strip()
     if not user_msg:
         return
+
+    # Route to talk mode if active
+    if ctx.user_data.get("talk_mode"):
+        await handle_talk_message(update, ctx, user_msg)
+        return
+
     system  = build_harvi_system()
     history = ctx.user_data.get("chat_history", [])
     await ctx.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
@@ -865,6 +911,38 @@ async def handle_free_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         chat_id_str = get_config("chat_id")
         if chat_id_str:
             await check_and_unlock_achievements(ext, bot=ctx.bot, chat_id=int(chat_id_str))
+
+
+async def handle_talk_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user_msg: str):
+    """Handle a message during an active talk session."""
+    talk_history = ctx.user_data.get("talk_history", [])
+    talk_history.append({"role": "user", "content": user_msg})
+
+    await ctx.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    system = build_harvi_system()
+
+    # Build a talk-specific system prompt
+    talk_system = system + (
+        "\n\nYou are in CONVERSATION PRACTICE mode. Rules:\n"
+        "- Respond naturally to what Vladimir said (continue the conversation)\n"
+        "- Keep your response under 80 words\n"
+        "- At the end, quietly note 1-2 grammar/vocabulary fixes with format: "
+        "'[✏️ fix: original → corrected]' on a new line\n"
+        "- Then ask a follow-up question to keep the conversation going\n"
+        "- Be warm, not a grammar teacher"
+    )
+
+    try:
+        reply = call_openrouter(talk_system, user_msg, talk_history[:-1], max_tokens=200)
+        if not reply:
+            reply = "That's interesting! Tell me more — what happened next? 😺"
+    except Exception:
+        reply = "That's interesting! Tell me more — what happened next? 😺"
+
+    talk_history.append({"role": "assistant", "content": reply})
+    ctx.user_data["talk_history"] = talk_history
+
+    await update.message.reply_text(reply)
 
 
 def generate_achievement_message(name: str, desc: str, tier: str, bonus_xp: int) -> str:
@@ -946,6 +1024,8 @@ def build_result_card(data: dict) -> str:
     import random
     quip = random.choice(pass_fail_quip.get(data["status"], ["Keep going!"]))
 
+    streak_recovered_line = "\n🔄 Streak recovered!" if data.get("streak_recovered") else ""
+
     result = (
         f"⚔️ HARVI — {date.today().strftime('%d.%m.%Y')}\n"
         f"{'━' * 28}\n"
@@ -954,6 +1034,7 @@ def build_result_card(data: dict) -> str:
         f"💥 Today's XP: {data['raw_xp']:.1f} {mult_text} = {data['final_xp']:.1f}\n"
         f"{status_emoji} STATUS: {data['status']}"
         + (f"  |  Penalty: -{data['penalty']} XP" if data["penalty"] else "") +
+        streak_recovered_line +
         f"\n\n"
         f"{streak_emoji} Streak: {data['streak']} days\n"
         f"⚡ Multiplier: {mult_text}\n"
@@ -964,6 +1045,19 @@ def build_result_card(data: dict) -> str:
         f"😺 {quip}"
     )
     return result
+
+
+def get_7day_avg_xp() -> float:
+    """Return average raw_xp*multiplier per PASS day over last 7 days."""
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("""
+        SELECT raw_xp, multiplier FROM daily_log
+        WHERE log_date >= date('now', '-7 days') AND status='PASS'
+    """).fetchall()
+    conn.close()
+    if not rows:
+        return 0.0
+    return sum(r[0] * r[1] for r in rows) / 7.0  # avg over 7-day window
 
 
 def build_stats_card(stats: dict) -> str:
@@ -990,6 +1084,17 @@ def build_stats_card(stats: dict) -> str:
         lv = skill_level(xp)
         pb = xp_progress_bar(xp, lv, width=8)
         lines.append(f"{emoji} {name:<10} Lv{lv}  {pb}  ({xp:.0f} XP)")
+
+    # Forecast: days to next level
+    avg_xp = get_7day_avg_xp()
+    if avg_xp > 0:
+        next_level_idx = min(level, len(OVERALL_LEVEL_XP) - 1)
+        next_threshold = OVERALL_LEVEL_XP[next_level_idx] if next_level_idx < len(OVERALL_LEVEL_XP) else None
+        if next_threshold and stats["total_xp"] < next_threshold:
+            xp_needed = next_threshold - stats["total_xp"]
+            days_needed = int(xp_needed / avg_xp) + 1
+            lines.append(f"{'━' * 28}")
+            lines.append(f"📈 At this pace: Level {level + 1} in ~{days_needed} days")
 
     return "\n".join(lines)
 
@@ -1066,7 +1171,97 @@ def build_quests_card() -> str:
         bar = "█" * int(pct * bar_w) + "░" * (bar_w - int(pct * bar_w))
         status = "✅" if done else f"{bar}"
         lines.append(f"{status}  {name}: {current}/{target}")
+
+    # Boss Fight section
+    boss = get_current_boss()
+    if boss:
+        lines.append("\n" + "━" * 24)
+        defeated = get_config("boss_defeated") == "1"
+        current = week_stats.get(boss["target_key"], 0)
+        target = boss["target_val"]
+        bar_w = 10
+        pct = min(1.0, current / target) if target > 0 else 1.0
+        bar = "█" * int(pct * bar_w) + "░" * (bar_w - int(pct * bar_w))
+        status_icon = "☠️ DEFEATED" if defeated else f"{bar} {current}/{target}"
+        lines.append(f"⚔️ BOSS FIGHT — {boss['name']}")
+        lines.append(f"_{boss['description']}_")
+        lines.append(f"{status_icon}")
+        lines.append(f"💰 Reward: +{boss['bonus_xp']} XP")
     return "\n".join(lines)
+
+
+def get_current_boss() -> dict | None:
+    """Return current boss dict if it's the same ISO week, else None."""
+    import datetime as _dt
+    iso_week = str(_dt.date.today().isocalendar()[1])
+    stored_week = get_config("boss_week")
+    if stored_week != iso_week:
+        return None
+    name = get_config("boss_name")
+    if not name:
+        return None
+    return {
+        "name":       name,
+        "description": get_config("boss_description") or "",
+        "target_key": get_config("boss_target_key") or "",
+        "target_val": int(get_config("boss_target_val") or 0),
+        "bonus_xp":   int(get_config("boss_bonus_xp") or 0),
+        "week":       iso_week,
+    }
+
+
+def assign_new_boss() -> dict:
+    """Pick a random boss for this week and save to config."""
+    import random, datetime as _dt
+    iso_week = str(_dt.date.today().isocalendar()[1])
+    boss = random.choice(BOSSES)
+    name, description, target_key, target_val, bonus_xp = boss
+    set_config("boss_name",       name)
+    set_config("boss_description", description)
+    set_config("boss_target_key", target_key)
+    set_config("boss_target_val", str(target_val))
+    set_config("boss_bonus_xp",   str(bonus_xp))
+    set_config("boss_week",       iso_week)
+    set_config("boss_defeated",   "0")
+    return {
+        "name": name, "description": description,
+        "target_key": target_key, "target_val": target_val,
+        "bonus_xp": bonus_xp, "week": iso_week,
+    }
+
+
+def boss_fight_check(week_stats: dict, bot=None, chat_id: int = None) -> str:
+    """Check if boss is defeated; return message string or ''."""
+    boss = get_current_boss()
+    if not boss:
+        return ""
+    if get_config("boss_defeated") == "1":
+        return ""
+    current = week_stats.get(boss["target_key"], 0)
+    if current >= boss["target_val"]:
+        set_config("boss_defeated", "1")
+        # Award bonus XP
+        prev_bonus = float(get_config("achievement_bonus_total") or 0)
+        set_config("achievement_bonus_total", str(prev_bonus + boss["bonus_xp"]))
+        msg = (
+            f"⚔️ *BOSS DEFEATED!* 🎉\n\n"
+            f"You defeated the *{boss['name']}*!\n"
+            f"_{boss['description']}_\n\n"
+            f"💰 Bonus: +{boss['bonus_xp']} XP awarded!\n\n"
+        )
+        try:
+            harvi = call_openrouter(
+                build_harvi_system(),
+                f"Vladimir just defeated the Boss '{boss['name']}' — {boss['description']}. "
+                f"Give a heroic 2-sentence congratulation as Harvi the cat!",
+                max_tokens=100,
+            )
+            if harvi:
+                msg += harvi
+        except Exception:
+            pass
+        return msg
+    return ""
 
 
 async def cmd_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1200,6 +1395,37 @@ async def cmd_quests(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"```\n{build_quests_card()}\n```", parse_mode="Markdown")
 
 
+def get_week_comparison() -> dict:
+    """Returns dict with this_week and last_week summary stats."""
+    today = date.today()
+    this_week_start = (today - timedelta(days=today.weekday())).isoformat()
+    last_week_start = (today - timedelta(days=today.weekday() + 7)).isoformat()
+    last_week_end   = (today - timedelta(days=today.weekday() + 1)).isoformat()
+
+    conn = sqlite3.connect(DB_PATH)
+    this_rows = conn.execute("""
+        SELECT raw_xp, multiplier, status, speaking_sessions
+        FROM daily_log WHERE log_date >= ? ORDER BY log_date
+    """, (this_week_start,)).fetchall()
+    last_rows = conn.execute("""
+        SELECT raw_xp, multiplier, status, speaking_sessions
+        FROM daily_log WHERE log_date >= ? AND log_date <= ? ORDER BY log_date
+    """, (last_week_start, last_week_end)).fetchall()
+    conn.close()
+
+    def summarize(rows):
+        xp = sum(r[0] * r[1] for r in rows if r[2] == "PASS")
+        pass_days = sum(1 for r in rows if r[2] == "PASS")
+        active_skills = 0  # count days with speaking > 0 as proxy for active skills
+        speaking = sum(r[3] for r in rows if r[2] == "PASS")
+        return {"xp": xp, "pass_days": pass_days, "speaking": speaking}
+
+    return {
+        "this_week": summarize(this_rows),
+        "last_week": summarize(last_rows),
+    }
+
+
 async def cmd_week(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute("""
@@ -1216,6 +1442,30 @@ async def cmd_week(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         s = "✅" if status == "PASS" else "❌"
         fire = "🔥" if streak > 0 else "  "
         lines.append(f"{s} {log_date}  XP:{raw_xp:.0f}  {fire}{streak}  Σ{total_xp:.0f}")
+
+    # Week-over-week comparison
+    try:
+        cmp = get_week_comparison()
+        tw = cmp["this_week"]
+        lw = cmp["last_week"]
+        if lw["xp"] > 0 or lw["pass_days"] > 0:
+            lines.append("━" * 26)
+            # XP comparison
+            if lw["xp"] > 0:
+                xp_diff_pct = ((tw["xp"] - lw["xp"]) / lw["xp"]) * 100
+                xp_arrow = "📈" if xp_diff_pct >= 0 else "📉"
+                sign = "+" if xp_diff_pct >= 0 else ""
+                lines.append(f"vs last week: XP {sign}{xp_diff_pct:.0f}% {xp_arrow}")
+            else:
+                lines.append(f"vs last week: XP {tw['xp']:.0f} (no data last week)")
+            # PASS days comparison
+            pass_diff = tw["pass_days"] - lw["pass_days"]
+            pass_arrow = "📈" if pass_diff > 0 else ("📉" if pass_diff < 0 else "➡️")
+            sign = "+" if pass_diff > 0 else ""
+            lines.append(f"PASS days: {tw['pass_days']} ({sign}{pass_diff} vs last week) {pass_arrow}")
+    except Exception:
+        pass
+
     await update.message.reply_text(f"```\n" + "\n".join(lines) + "\n```", parse_mode="Markdown")
 
 
@@ -1340,6 +1590,16 @@ async def ask_writing_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             bot=query.get_bot(),
             chat_id=int(chat_id_str),
         )
+        # Boss fight check
+        try:
+            week_stats = get_week_stats()
+            boss_msg = boss_fight_check(week_stats)
+            if boss_msg:
+                await query.get_bot().send_message(
+                    chat_id=int(chat_id_str), text=boss_msg, parse_mode="Markdown"
+                )
+        except Exception as e:
+            log.warning(f"boss_fight_check error: {e}")
 
     return ConversationHandler.END
 
@@ -1586,12 +1846,55 @@ async def morning_recommendation_job(ctx: ContextTypes.DEFAULT_TYPE):
         report = build_weekly_report()
         if report:
             await ctx.bot.send_message(chat_id=int(chat_id), text=report, parse_mode="Markdown")
+        # Assign new boss fight for the week
+        try:
+            boss = assign_new_boss()
+            boss_announce = (
+                f"⚔️ *NEW BOSS FIGHT — Week {boss['week']}!*\n\n"
+                f"🐉 *{boss['name']}*\n"
+                f"_{boss['description']}_\n\n"
+                f"💰 Reward: +{boss['bonus_xp']} XP if you win!\n\n"
+                f"_Defeat it by completing the challenge this week!_"
+            )
+            await ctx.bot.send_message(chat_id=int(chat_id), text=boss_announce, parse_mode="Markdown")
+        except Exception as e:
+            log.warning(f"Boss assignment error: {e}")
     if today.day == 1:
         last = (today.replace(day=1) - timedelta(days=1))
         monthly = build_month_card(last.year, last.month)
         await ctx.bot.send_message(chat_id=int(chat_id), text=monthly, parse_mode="Markdown")
     text = build_morning_recommendation()
     await ctx.bot.send_message(chat_id=int(chat_id), text=text, parse_mode="Markdown")
+
+    # Personalized daily task from Harvi
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        last7 = conn.execute("""
+            SELECT log_date, duo_xp, reading_pages, listening_min, speaking_sessions,
+                   srs_reviews, writing_min, status
+            FROM daily_log WHERE log_date >= date('now', '-7 days') ORDER BY log_date
+        """).fetchall()
+        conn.close()
+        data_summary = "; ".join(
+            f"{r[0]}:{r[7]}(duo={r[1]},read={r[2]},listen={r[3]},speak={r[4]},srs={r[5]},write={r[6]})"
+            for r in last7
+        )
+        system = build_harvi_system()
+        task_prompt = (
+            f"Vladimir's last 7 days data: {data_summary}. "
+            f"Look at this data. Give him ONE specific task for today. Max 2 sentences. "
+            f"Be concrete (e.g. 'Watch 1 Friends episode' not 'watch something'). "
+            f"Address him directly. No intro, just the task."
+        )
+        task_reply = call_openrouter(system, task_prompt, max_tokens=80)
+        if task_reply:
+            await ctx.bot.send_message(
+                chat_id=int(chat_id),
+                text=f"🎯 *Today's mission from Harvi:*\n\n{task_reply}",
+                parse_mode="Markdown"
+            )
+    except Exception as e:
+        log.warning(f"Personalized task error: {e}")
 
 
 async def streak_warning_job(ctx: ContextTypes.DEFAULT_TYPE):
@@ -1687,6 +1990,141 @@ async def evening_checkin_job(ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_grammar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Check grammar of user-provided text."""
+    args = ctx.args
+    if not args:
+        await update.message.reply_text(
+            "📝 *Grammar Check*\n\nUsage: `/grammar I go to shop yesterday`\n\n"
+            "Send me a sentence and I'll fix it! 😺",
+            parse_mode="Markdown"
+        )
+        return
+    text_to_check = " ".join(args)
+    await ctx.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    system = build_harvi_system()
+    prompt = (
+        f"The user wrote: \"{text_to_check}\"\n\n"
+        f"Check this for grammar mistakes. If there are errors:\n"
+        f"1. Show the corrected version\n"
+        f"2. Briefly explain the main error(s) in 2-3 sentences\n"
+        f"If it's already correct, say so and give a small compliment.\n"
+        f"Keep it friendly and under 150 words."
+    )
+    try:
+        reply = call_openrouter(system, prompt, max_tokens=200)
+        if not reply:
+            reply = "Sorry, I couldn't check that right now. Try again in a moment! 😅"
+    except Exception:
+        reply = "Sorry, I couldn't check that right now. Try again in a moment! 😅"
+    await update.message.reply_text(f"📝 *Grammar Check:*\n\n{reply}", parse_mode="Markdown")
+
+
+async def cmd_talk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Start a conversation practice session with Harvi."""
+    ctx.user_data["talk_mode"] = True
+    ctx.user_data["talk_history"] = []
+    await ctx.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    system = build_harvi_system()
+    prompt = (
+        "Start a friendly English conversation practice session with Vladimir. "
+        "Pick an interesting topic (could be travel, technology, daily life, movies, etc.) "
+        "and ask him one engaging question in English. "
+        "Keep it under 50 words. Be warm and encouraging."
+    )
+    try:
+        opening = call_openrouter(system, prompt, max_tokens=100)
+        if not opening:
+            opening = "Let's practice English! 🗣 Tell me — what's the most interesting place you've visited? Describe it in a few sentences!"
+    except Exception:
+        opening = "Let's practice English! 🗣 Tell me — what's the most interesting place you've visited? Describe it in a few sentences!"
+    ctx.user_data["talk_history"].append({"role": "assistant", "content": opening})
+    await update.message.reply_text(
+        f"🗣 *Conversation Practice started!*\n\n{opening}\n\n_Type your reply freely. Use /endtalk to finish._",
+        parse_mode="Markdown"
+    )
+
+
+async def cmd_endtalk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """End the conversation practice session."""
+    if not ctx.user_data.get("talk_mode"):
+        await update.message.reply_text("No active conversation session. Use /talk to start one! 😺")
+        return
+    history = ctx.user_data.get("talk_history", [])
+    # Count user messages
+    user_msgs = [m for m in history if m["role"] == "user"]
+    msg_count = len(user_msgs)
+
+    ctx.user_data["talk_mode"] = False
+    ctx.user_data["talk_history"] = []
+
+    if msg_count == 0:
+        await update.message.reply_text(
+            "Session ended — but you didn't say anything! 😸 Start again with /talk whenever you're ready."
+        )
+        return
+
+    await ctx.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    system = build_harvi_system()
+    history_text = "\n".join(
+        f"{'Vladimir' if m['role'] == 'user' else 'Harvi'}: {m['content']}"
+        for m in history
+    )
+    prompt = (
+        f"Here is the conversation we just had:\n{history_text}\n\n"
+        f"Give a short session report (3-4 sentences):\n"
+        f"1. How many messages Vladimir sent ({msg_count} messages)\n"
+        f"2. 2-3 specific grammar/vocabulary improvements he could make (be concrete)\n"
+        f"3. One genuine compliment about his English\n"
+        f"Be warm and encouraging, not preachy."
+    )
+    try:
+        report = call_openrouter(system, prompt, max_tokens=200)
+        if not report:
+            report = f"Great session! You sent {msg_count} messages. Keep practicing — every conversation counts! 🎉"
+    except Exception:
+        report = f"Great session! You sent {msg_count} messages. Keep practicing — every conversation counts! 🎉"
+
+    await update.message.reply_text(
+        f"✅ *Conversation session ended!*\n\n"
+        f"📊 Messages: {msg_count}\n\n"
+        f"{report}",
+        parse_mode="Markdown"
+    )
+
+
+async def cmd_skilltree(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Show the skill tree with visual progress bars."""
+    stats = get_all_stats()
+    skill_info = [
+        ("📱", "Duolingo",  "duolingo"),
+        ("📖", "Reading",   "reading"),
+        ("🎧", "Listening", "listening"),
+        ("🗣", "Speaking",  "speaking"),
+        ("🃏", "SRS",       "srs"),
+        ("✍️", "Writing",   "writing"),
+    ]
+    lines = [
+        "⚔️ SKILL TREE",
+        "═" * 20,
+    ]
+    for emoji, name, key in skill_info:
+        xp = stats["skill_xp"][key]
+        lv = skill_level(xp)
+        if lv >= len(SKILL_LEVEL_XP) - 1:
+            bar = "█" * 12
+        else:
+            lo = SKILL_LEVEL_XP[lv]
+            hi = SKILL_LEVEL_XP[lv + 1]
+            pct = (xp - lo) / (hi - lo) if hi > lo else 1.0
+            filled = int(pct * 12)
+            bar = "█" * filled + "░" * (12 - filled)
+        lines.append(f"{emoji} {name:<10} Lv{lv} {bar}")
+    lines.append("═" * 20)
+    lines.append(f"Total skill XP: {sum(stats['skill_xp'].values()):.0f}")
+    await update.message.reply_text(f"```\n" + "\n".join(lines) + "\n```", parse_mode="Markdown")
+
+
 PID_FILE = os.path.join(os.path.dirname(__file__), "bot.pid")
 
 
@@ -1752,6 +2190,10 @@ def main():
     app.add_handler(CommandHandler("month",        cmd_month))
     app.add_handler(CommandHandler("week",         cmd_week))
     app.add_handler(CommandHandler("edit",         cmd_edit))
+    app.add_handler(CommandHandler("grammar",      cmd_grammar))
+    app.add_handler(CommandHandler("talk",         cmd_talk))
+    app.add_handler(CommandHandler("endtalk",      cmd_endtalk))
+    app.add_handler(CommandHandler("skilltree",    cmd_skilltree))
     app.add_handler(conv)
     app.add_handler(level_conv)
     # free-text AI — must be last
