@@ -486,6 +486,27 @@ def save_memory(key: str, value: str, category: str = "general", source: str = "
         log.warning(f"save_memory error: {e}")
 
 
+def load_persistent_history() -> list:
+    """Load last N chat messages from Supabase so history survives bot restarts."""
+    import json
+    val = get_config("last_chat_history")
+    if not val:
+        return []
+    try:
+        return json.loads(val)
+    except Exception:
+        return []
+
+
+def save_persistent_history(history: list):
+    """Persist last 10 chat messages to Supabase/SQLite."""
+    import json
+    try:
+        set_config("last_chat_history", json.dumps(history[-10:], ensure_ascii=False))
+    except Exception as e:
+        log.warning(f"save_persistent_history error: {e}")
+
+
 def extract_and_save_memories(conversation: list):
     """Ask AI to extract memorable facts from conversation and save them."""
     import json, re
@@ -990,6 +1011,11 @@ async def handle_free_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await handle_talk_message(update, ctx, user_msg)
         return
 
+    # Load history from persistent storage on first message of a new session
+    if not ctx.user_data.get("history_loaded"):
+        ctx.user_data["chat_history"] = load_persistent_history()
+        ctx.user_data["history_loaded"] = True
+
     system  = build_harvi_system()
     history = ctx.user_data.get("chat_history", [])
     await ctx.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
@@ -999,6 +1025,7 @@ async def handle_free_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     history.append({"role": "user",      "content": user_msg})
     history.append({"role": "assistant", "content": reply})
     ctx.user_data["chat_history"] = history[-10:]
+    save_persistent_history(ctx.user_data["chat_history"])
     await update.message.reply_text(reply)
 
     # track questions for Curious Cat achievement
@@ -1580,7 +1607,8 @@ async def cmd_checkin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["duo_total_xp"] = duo_total
     ctx.user_data["duo_streak_api"] = duo_streak
 
-    streak_line = f"Duolingo: +{duo_delta} XP today  🔥 streak {duo_streak} days"
+    rpg_streak  = get_all_stats()["current_streak"]
+    streak_line = f"Duolingo: +{duo_delta} XP today  ⚔️ RPG streak: {rpg_streak} days"
 
     kb = make_keyboard([0, 5, 10, 15, 20, 30], "reading")
     await update.message.reply_text(
@@ -2012,8 +2040,8 @@ async def streak_warning_job(ctx: ContextTypes.DEFAULT_TYPE):
     conn.close()
     if row:
         return
-    _, duo_streak = fetch_duolingo_xp()
-    risk_line = f"🔥 {duo_streak}-day streak at risk!" if duo_streak > 0 else "💔 No streak yet — start one tonight!"
+    rpg_streak = get_all_stats()["current_streak"]
+    risk_line = f"⚔️ {rpg_streak}-day RPG streak at risk!" if rpg_streak > 0 else "💔 No streak yet — start one tonight!"
     await ctx.bot.send_message(
         chat_id=int(chat_id),
         text=(
@@ -2038,8 +2066,8 @@ async def checkin_final_reminder_job(ctx: ContextTypes.DEFAULT_TYPE):
     conn.close()
     if row:
         return
-    _, duo_streak = fetch_duolingo_xp()
-    risk = f"🔥 {duo_streak}-day streak ends at midnight!" if duo_streak > 0 else "💔 No streak yet — start one NOW!"
+    rpg_streak = get_all_stats()["current_streak"]
+    risk = f"⚔️ {rpg_streak}-day streak ends at midnight!" if rpg_streak > 0 else "💔 No streak yet — start one NOW!"
     await ctx.bot.send_message(
         chat_id=int(chat_id),
         text=(
@@ -2079,13 +2107,14 @@ async def evening_checkin_job(ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = get_config("chat_id")
     if not chat_id:
         return
-    duo_xp, duo_streak = fetch_duolingo_xp()
-    risk = "⚠️ Keep it alive!" if duo_streak > 0 and duo_streak < 3 else ("🔥 Looking good!" if duo_streak >= 3 else "✅ Safe")
+    duo_xp, _ = fetch_duolingo_xp()
+    rpg_streak = get_all_stats()["current_streak"]
+    risk = "⚠️ Keep it alive!" if rpg_streak > 0 and rpg_streak < 3 else ("🔥 Looking good!" if rpg_streak >= 3 else "✅ Start tonight!")
     await ctx.bot.send_message(
         chat_id=int(chat_id),
         text=(
             f"🌙 *Evening Check-in — {date.today().strftime('%d.%m.%Y')}*\n\n"
-            f"🔥 Duolingo streak: {duo_streak} days  {risk}\n\n"
+            f"⚔️ RPG streak: {rpg_streak} days  {risk}\n\n"
             f"How was today, Harvi?\n"
             f"Tap /checkin to log your day and earn XP! 🎮"
         ),
