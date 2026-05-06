@@ -30,8 +30,6 @@ if _SUPABASE_URL and _SUPABASE_KEY:
 OPENROUTER_KEY = os.getenv("OPENROUTER_KEY", "")
 OPENROUTER_MODEL = "openai/gpt-4o-mini"
 
-EVENING_HOUR = 21
-EVENING_MINUTE = 0
 MIN_XP_PASS = 0
 FAIL_PENALTY = 20
 
@@ -2041,14 +2039,13 @@ async def streak_warning_job(ctx: ContextTypes.DEFAULT_TYPE):
     if row:
         return
     rpg_streak = get_all_stats()["current_streak"]
-    risk_line = f"⚔️ {rpg_streak}-day RPG streak at risk!" if rpg_streak > 0 else "💔 No streak yet — start one tonight!"
+    streak_line = f"⚔️ {rpg_streak}-day streak — don't break it now!" if rpg_streak > 0 else "💔 No streak yet — tonight's the night!"
     await ctx.bot.send_message(
         chat_id=int(chat_id),
         text=(
-            f"⚠️ *Hey Harvi! 2 hours left!*\n\n"
-            f"{risk_line}\n\n"
-            f"You haven't logged today yet.\n"
-            f"/checkin takes 30 seconds — let's go! ⚡"
+            f"⚠️ *Still no check-in, Harvi!*\n\n"
+            f"{streak_line}\n\n"
+            f"You've got time — /checkin takes 30 seconds 🕐"
         ),
         parse_mode="Markdown"
     )
@@ -2067,13 +2064,13 @@ async def checkin_final_reminder_job(ctx: ContextTypes.DEFAULT_TYPE):
     if row:
         return
     rpg_streak = get_all_stats()["current_streak"]
-    risk = f"⚔️ {rpg_streak}-day streak ends at midnight!" if rpg_streak > 0 else "💔 No streak yet — start one NOW!"
+    risk = f"⚔️ {rpg_streak}-day streak ends at midnight!" if rpg_streak > 0 else "💔 Zero streak — fix that right now!"
     await ctx.bot.send_message(
         chat_id=int(chat_id),
         text=(
-            f"⏰ *Last call, Harvi! 30 minutes left!*\n\n"
+            f"🚨 *LAST CALL, Harvi! 1.5 hours left!*\n\n"
             f"{risk}\n\n"
-            f"30 seconds, buttons only — /checkin 🚀"
+            f"Buttons only, 30 seconds — /checkin 🚀"
         ),
         parse_mode="Markdown"
     )
@@ -2107,16 +2104,15 @@ async def evening_checkin_job(ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = get_config("chat_id")
     if not chat_id:
         return
-    duo_xp, _ = fetch_duolingo_xp()
     rpg_streak = get_all_stats()["current_streak"]
-    risk = "⚠️ Keep it alive!" if rpg_streak > 0 and rpg_streak < 3 else ("🔥 Looking good!" if rpg_streak >= 3 else "✅ Start tonight!")
+    streak_badge = f"🔥 {rpg_streak}-day streak" if rpg_streak >= 3 else (f"⚡ {rpg_streak}-day streak" if rpg_streak > 0 else "💔 No streak yet")
     await ctx.bot.send_message(
         chat_id=int(chat_id),
         text=(
-            f"🌙 *Evening Check-in — {date.today().strftime('%d.%m.%Y')}*\n\n"
-            f"⚔️ RPG streak: {rpg_streak} days  {risk}\n\n"
-            f"How was today, Harvi?\n"
-            f"Tap /checkin to log your day and earn XP! 🎮"
+            f"🌙 *Time to log your day, Harvi!*\n\n"
+            f"{streak_badge}  ·  {date.today().strftime('%d.%m.%Y')}\n\n"
+            f"How much English did you do today?\n"
+            f"/checkin → buttons only, 30 seconds 🎮"
         ),
         parse_mode="Markdown"
     )
@@ -2383,11 +2379,12 @@ def main():
     # free-text AI — must be last
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_free_text))
 
-    app.job_queue.run_daily(morning_recommendation_job, time=dtime(hour=10, minute=0))
-    app.job_queue.run_daily(midday_message_job,         time=dtime(hour=13, minute=0))
-    app.job_queue.run_daily(streak_warning_job,         time=dtime(hour=19, minute=0))
-    app.job_queue.run_daily(checkin_final_reminder_job, time=dtime(hour=20, minute=30))
-    app.job_queue.run_daily(evening_checkin_job,        time=dtime(hour=EVENING_HOUR, minute=EVENING_MINUTE))
+    # All times UTC (МСК = UTC+3):
+    app.job_queue.run_daily(morning_recommendation_job, time=dtime(hour=5,  minute=0))   # 08:00 МСК
+    app.job_queue.run_daily(midday_message_job,         time=dtime(hour=10, minute=0))   # 13:00 МСК
+    app.job_queue.run_daily(evening_checkin_job,        time=dtime(hour=17, minute=0))   # 20:00 МСК
+    app.job_queue.run_daily(streak_warning_job,         time=dtime(hour=18, minute=30))  # 21:30 МСК
+    app.job_queue.run_daily(checkin_final_reminder_job, time=dtime(hour=19, minute=30))  # 22:30 МСК
 
     log.info("Bot started.")
     app.run_polling(drop_pending_updates=True)
