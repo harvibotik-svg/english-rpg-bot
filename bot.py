@@ -1004,7 +1004,13 @@ async def handle_free_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not user_msg:
         return
 
-    # Route to talk mode if active
+    # Route to active mode if any
+    if ctx.user_data.get("diary_active"):
+        await handle_diary_response(update, ctx, user_msg)
+        return
+    if ctx.user_data.get("vocab_active"):
+        await handle_vocab_response(update, ctx, user_msg)
+        return
     if ctx.user_data.get("talk_mode"):
         await handle_talk_message(update, ctx, user_msg)
         return
@@ -2076,28 +2082,79 @@ async def checkin_final_reminder_job(ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def midday_message_job(ctx: ContextTypes.DEFAULT_TYPE):
-    """13:00 — proactive AI message: question, mini-story, tip or friendly check-in."""
+async def mini_lesson_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """18:00 МСК — structured mini-lesson: 3 new words + example + quick test."""
     chat_id = get_config("chat_id")
     if not chat_id:
         return
-    import random
+    import json, re
+    eng_lvl = get_config("english_level") or "B1"
     system = build_harvi_system()
-    prompt = random.choice([
-        "Send a short friendly midday message. Ask one fun question about their day "
-        "and sneak in a short English practice — one sentence to translate or complete.",
-        "Give Vladimir a mini writing prompt for today — 2 sentences max, fun topic, "
-        "appropriate for his level. Encourage him to reply.",
-        "Share one practical English phrase or idiom he can use TODAY. "
-        "Give a real example, keep it punchy.",
-        "Ask Vladimir one interesting question in English he should think about and "
-        "answer out loud (speaking practice). Make it relevant to his life.",
-        "Give a quick grammar tip that fixes a common mistake at his level. "
-        "One rule, two examples, done.",
-    ])
-    text = call_openrouter(system, prompt, max_tokens=180)
-    if text:
-        await ctx.bot.send_message(chat_id=int(chat_id), text=text)
+    prompt = (
+        f"Create a SHORT 5-min English mini-lesson for a {eng_lvl} learner. "
+        f"Pick 3 useful intermediate-advanced words (no basic 'hello/eat/big'). "
+        f"Mix word types (verb/noun/adj). Return STRICTLY this JSON only:\n"
+        '{"intro":"1-line motivation sentence","words":[{"word":"...","translation":"Russian","part":"verb/noun/adj"},'
+        '{"word":"...","translation":"Russian","part":"verb/noun/adj"},'
+        '{"word":"...","translation":"Russian","part":"verb/noun/adj"}],'
+        '"example":"natural English sentence using ONE of the words","example_ru":"Russian translation",'
+        '"test":{"question":"Which word means \\"...\\"?","options":["opt1","opt2","opt3","opt4"],'
+        '"correct_idx":0,"explanation":"why"}}'
+    )
+    raw = call_openrouter(system, prompt, max_tokens=600)
+    if not raw:
+        return
+    try:
+        match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if not match:
+            return
+        data = json.loads(match.group())
+    except Exception as e:
+        log.warning(f"mini_lesson parse error: {e}")
+        return
+
+    words = data.get("words", [])[:3]
+    if len(words) < 3:
+        return
+    word_lines = [f"• *{w['word']}* _({w.get('part','')})_ — {w['translation']}" for w in words]
+    text = (
+        f"📚 *Mini-Lesson — {date.today().strftime('%d.%m')}*\n\n"
+        f"_{data.get('intro','3 new words for today!')}_\n\n"
+        f"*🆕 New words:*\n" + "\n".join(word_lines) + "\n\n"
+        f"*📝 Example:*\n_{data.get('example','')}_\n_({data.get('example_ru','')})_\n\n"
+        f"_🎯 Quick test below ↓_"
+    )
+    await ctx.bot.send_message(chat_id=int(chat_id), text=text, parse_mode="Markdown")
+
+    test = data.get("test", {})
+    options = test.get("options", [])[:4]
+    correct_idx = int(test.get("correct_idx", 0))
+    if len(options) < 2:
+        return
+    set_config("minitest_explanation", test.get("explanation", "")[:300])
+
+    kb = [[InlineKeyboardButton(f"{chr(65+i)}. {opt}", callback_data=f"minitest:{i}:{correct_idx}")]
+          for i, opt in enumerate(options)]
+    await ctx.bot.send_message(
+        chat_id=int(chat_id),
+        text=f"❓ {test.get('question','Pick the right one:')}",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
+
+
+async def minitest_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    parts = q.data.split(":")
+    if len(parts) != 3:
+        return
+    user_idx, correct_idx = int(parts[1]), int(parts[2])
+    explanation = get_config("minitest_explanation") or ""
+    if user_idx == correct_idx:
+        result = "✅ *Correct! Nice one.*"
+    else:
+        result = f"❌ *Not quite — correct was option {chr(65+correct_idx)}*"
+    await q.edit_message_text(f"{result}\n\n_{explanation}_", parse_mode="Markdown")
 
 
 async def evening_checkin_job(ctx: ContextTypes.DEFAULT_TYPE):
@@ -2253,6 +2310,200 @@ async def cmd_skilltree(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"```\n" + "\n".join(lines) + "\n```", parse_mode="Markdown")
 
 
+PHRASE_CATEGORIES = {
+    "travel":     ("🛫", "Travel"),
+    "food":       ("🍔", "Food & Restaurants"),
+    "emergency":  ("🆘", "Emergency"),
+    "work":       ("💼", "Work & Office"),
+    "smalltalk":  ("🤝", "Small Talk"),
+    "shopping":   ("🛍", "Shopping"),
+    "hotel":      ("🏨", "Hotel"),
+    "dating":     ("💝", "Dating"),
+}
+
+
+async def cmd_phrases(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Phrasebook menu — pick category, get 10 useful phrases."""
+    rows = list(PHRASE_CATEGORIES.items())
+    kb = []
+    for i in range(0, len(rows), 2):
+        kb.append([
+            InlineKeyboardButton(f"{rows[i][1][0]} {rows[i][1][1]}", callback_data=f"phrases:{rows[i][0]}"),
+            *([InlineKeyboardButton(f"{rows[i+1][1][0]} {rows[i+1][1][1]}", callback_data=f"phrases:{rows[i+1][0]}")] if i+1 < len(rows) else [])
+        ])
+    await update.message.reply_text(
+        "📖 *Phrasebook*\n\nPick a category — I'll send you 10 useful phrases for it.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
+
+
+async def phrases_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer("Loading...")
+    cat_key = q.data.split(":")[1]
+    if cat_key not in PHRASE_CATEGORIES:
+        return
+    icon, label = PHRASE_CATEGORIES[cat_key]
+    eng_lvl = get_config("english_level") or "B1"
+    system = build_harvi_system()
+    prompt = (
+        f"Give Vladimir 10 USEFUL real-world English phrases for the category: {label}. "
+        f"Level: {eng_lvl}. Format STRICTLY:\n"
+        f"1. **English phrase** — Russian translation\n"
+        f"2. **English phrase** — Russian translation\n"
+        f"...\n\n"
+        f"Mix conversational + practical. Skip textbook clichés. Real phrases people actually use."
+    )
+    text = call_openrouter(system, prompt, max_tokens=700)
+    if not text:
+        text = "Couldn't load phrases — try again later!"
+    await q.edit_message_text(
+        f"{icon} *{label}*\n\n{text}",
+        parse_mode="Markdown"
+    )
+
+
+async def cmd_diary(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Evening English diary — bot asks a question, you write 2-3 sentences, AI corrects."""
+    eng_lvl = get_config("english_level") or "B1"
+    system = build_harvi_system()
+    prompt = (
+        f"Generate ONE thoughtful English diary question for Vladimir to reflect on his day. "
+        f"Level: {eng_lvl}. Friendly, casual, 1 sentence, no intro. "
+        f"Examples: 'What surprised you today?', 'Who made you smile today and why?'"
+    )
+    question = call_openrouter(system, prompt, max_tokens=80) or "What was the highlight of your day today?"
+
+    ctx.user_data["diary_active"] = True
+    ctx.user_data["diary_question"] = question
+
+    await update.message.reply_text(
+        f"📔 *English Diary*\n\n"
+        f"_{question}_\n\n"
+        f"Write 2-3 sentences in English. I'll fix grammar, suggest a polished version, "
+        f"and give you ONE useful tip.\n\n"
+        f"/enddiary to cancel.",
+        parse_mode="Markdown"
+    )
+
+
+async def cmd_enddiary(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["diary_active"] = False
+    ctx.user_data["diary_question"] = None
+    await update.message.reply_text("Diary closed. See you tomorrow! 📔")
+
+
+async def handle_diary_response(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user_msg: str):
+    """Process diary entry — grammar fix + polished version + tip."""
+    question = ctx.user_data.get("diary_question", "")
+    eng_lvl = get_config("english_level") or "B1"
+    system = build_harvi_system()
+    prompt = (
+        f"Vladimir answered the diary question \"{question}\" with:\n"
+        f"\"{user_msg}\"\n\n"
+        f"Reply STRICTLY in this format:\n"
+        f"✏️ *Fixes:* (1-3 critical grammar/word fixes only, or 'No fixes — solid!')\n\n"
+        f"📝 *Polished version:*\n_natural English version of his answer_\n\n"
+        f"💡 *Tip:* one specific grammar/vocab insight he can use\n\n"
+        f"Be warm. Level: {eng_lvl}. Max 150 words total."
+    )
+    await ctx.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    feedback = call_openrouter(system, prompt, max_tokens=400) or "Solid effort, keep writing daily! 📔"
+
+    ctx.user_data["diary_active"] = False
+    ctx.user_data["diary_question"] = None
+    await update.message.reply_text(feedback, parse_mode="Markdown")
+
+
+async def cmd_vocabgame(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Vocabulary guessing game — definition + hint, you guess the word."""
+    import json, re
+    eng_lvl = get_config("english_level") or "B1"
+    system = build_harvi_system()
+    prompt = (
+        f"Pick ONE useful intermediate-advanced English word for a {eng_lvl} learner. "
+        f"Return STRICTLY JSON only:\n"
+        '{"word":"target_word","definition":"definition WITHOUT using the word itself",'
+        '"example":"sentence with ___ blanked out","hint":"first letter + dashes like B___ (5 letters)"}'
+    )
+    raw = call_openrouter(system, prompt, max_tokens=200)
+    if not raw:
+        await update.message.reply_text("Couldn't start game — try again!")
+        return
+    try:
+        m = re.search(r'\{.*\}', raw, re.DOTALL)
+        data = json.loads(m.group())
+    except Exception:
+        await update.message.reply_text("Game crashed — try again!")
+        return
+
+    word = data.get("word", "").strip().lower()
+    if not word:
+        return
+    ctx.user_data["vocab_active"] = True
+    ctx.user_data["vocab_word"] = word
+    ctx.user_data["vocab_attempts"] = 0
+
+    await update.message.reply_text(
+        f"🎮 *Vocab Game*\n\n"
+        f"📖 *Definition:*\n_{data.get('definition','')}_\n\n"
+        f"💬 *Example:* _{data.get('example','')}_\n\n"
+        f"💡 *Hint:* `{data.get('hint','')}`\n\n"
+        f"_Type the word. /endgame to stop._",
+        parse_mode="Markdown"
+    )
+
+
+async def cmd_endgame(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["vocab_active"] = False
+    ctx.user_data["vocab_word"] = None
+    await update.message.reply_text("Game ended! 🎮")
+
+
+async def handle_vocab_response(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user_msg: str):
+    correct = (ctx.user_data.get("vocab_word") or "").lower()
+    guess   = user_msg.lower().strip().replace(".","").replace("!","").replace("?","")
+    attempts = ctx.user_data.get("vocab_attempts", 0) + 1
+    ctx.user_data["vocab_attempts"] = attempts
+
+    if guess == correct:
+        ctx.user_data["vocab_active"] = False
+        ctx.user_data["vocab_word"] = None
+        await update.message.reply_text(
+            f"🎉 *Correct! '{correct}'* — got it in {attempts} {'try' if attempts==1 else 'tries'}.\n\n"
+            f"Want another? /vocabgame",
+            parse_mode="Markdown"
+        )
+    elif attempts >= 3:
+        ctx.user_data["vocab_active"] = False
+        ctx.user_data["vocab_word"] = None
+        await update.message.reply_text(
+            f"❌ The word was *'{correct}'*. Better luck next time!\n\n/vocabgame for a new one.",
+            parse_mode="Markdown"
+        )
+    else:
+        await update.message.reply_text(f"❌ Not quite. {3-attempts} {'try' if 3-attempts==1 else 'tries'} left.")
+
+
+async def cmd_challenge(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Practical real-world weekly English challenge."""
+    eng_lvl = get_config("english_level") or "B1"
+    system = build_harvi_system()
+    prompt = (
+        f"Give Vladimir ONE practical, real-world weekly English challenge. "
+        f"Level: {eng_lvl}. Specific, fun, 30-60 min effort. "
+        f"Examples: 'Watch one Friends episode in English without subs', "
+        f"'Translate 1 verse of your favourite song', 'Describe your day in 5 voice messages'. "
+        f"Format: 🎯 [Title]\\n[1-2 sentence description]\\n💡 Tip for doing it."
+    )
+    challenge = call_openrouter(system, prompt, max_tokens=200) or "🎯 *Challenge:* Describe what you did today in 5 English voice messages."
+    await update.message.reply_text(
+        f"⚔️ *Weekly Challenge*\n\n{challenge}\n\n_Reply when done — I'll grade it!_",
+        parse_mode="Markdown"
+    )
+
+
 async def cmd_memory(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Show what Harvi remembers about Vladimir."""
     memories = get_memories(50)
@@ -2374,6 +2625,14 @@ def main():
     app.add_handler(CommandHandler("skilltree",    cmd_skilltree))
     app.add_handler(CommandHandler("memory",       cmd_memory))
     app.add_handler(CommandHandler("forget",       cmd_forget))
+    app.add_handler(CommandHandler("phrases",      cmd_phrases))
+    app.add_handler(CommandHandler("diary",        cmd_diary))
+    app.add_handler(CommandHandler("enddiary",     cmd_enddiary))
+    app.add_handler(CommandHandler("vocabgame",    cmd_vocabgame))
+    app.add_handler(CommandHandler("endgame",      cmd_endgame))
+    app.add_handler(CommandHandler("challenge",    cmd_challenge))
+    app.add_handler(CallbackQueryHandler(minitest_callback, pattern="^minitest:"))
+    app.add_handler(CallbackQueryHandler(phrases_callback,  pattern="^phrases:"))
     app.add_handler(conv)
     app.add_handler(level_conv)
     # free-text AI — must be last
@@ -2381,7 +2640,7 @@ def main():
 
     # All times UTC (МСК = UTC+3):
     app.job_queue.run_daily(morning_recommendation_job, time=dtime(hour=5,  minute=0))   # 08:00 МСК
-    app.job_queue.run_daily(midday_message_job,         time=dtime(hour=10, minute=0))   # 13:00 МСК
+    app.job_queue.run_daily(mini_lesson_job,            time=dtime(hour=15, minute=0))   # 18:00 МСК
     app.job_queue.run_daily(evening_checkin_job,        time=dtime(hour=17, minute=0))   # 20:00 МСК
     app.job_queue.run_daily(streak_warning_job,         time=dtime(hour=18, minute=30))  # 21:30 МСК
     app.job_queue.run_daily(checkin_final_reminder_job, time=dtime(hour=19, minute=30))  # 22:30 МСК
